@@ -8,6 +8,8 @@
     <span class="tag" title="El JRT la pidió y quedó auto-aprobada">Auto JRT</span>
   {% elif origen == 'admin_auto' %}
     <span class="tag" title="Un administrador la pidió y quedó auto-aprobada">Auto Admin</span>
+  {% elif origen == 'criticos_verdes' %}
+    <span class="tag" title="Se pidió y quedó auto-aprobada porque todos los críticos ya figuraban vigentes en GCG">Auto (verdes)</span>
   {% else %}
     <span class="tag">Manual</span>
   {% endif %}
@@ -32,12 +34,16 @@
     </thead>
     <tbody>
       {% for s in solicitudes %}
-      <tr>
+      {% set tiene_gcg = (s.gcg_documentos is not none) or s.gcg_error %}
+      <tr{% if tiene_gcg %} class="row-clickable" data-doc-target="gcg-doc-{{ s.id }}" data-dni="{{ s.dni }}" data-nombre="{{ s.nombre }}" title="Ver lo que se encontró en GCG al momento de esta solicitud"{% endif %}>
         <td>{{ s.nombre }}</td>
         <td>{{ s.dni }}</td>
         <td>{{ s.jrt }}</td>
         <td>{{ s.razon_social or '—' }}</td>
-        <td>{{ s.documentos }}</td>
+        <td{% if tiene_gcg %} class="doc-cell-clickable"{% endif %}>
+          {{ s.documentos }}
+          {% if tiene_gcg %}<span class="tag ver-gcg-tag">Ver detalle GCG</span>{% endif %}
+        </td>
         <td>{{ origen_chip(s.origen) }}</td>
         <td><span class="estado-chip estado-{{ s.estado }}">{{ s.estado }}</span></td>
         <td>{{ s.solicitado_por_nombre }}<div class="muted small">{{ s.fecha_solicitud|fecha(true) if s.fecha_solicitud else '' }}</div></td>
@@ -74,4 +80,37 @@
     <p class="muted">Todavía no se pidió ningún desbloqueo.</p>
   {% endif %}
 </section>
+
+<div hidden>
+  {% for s in solicitudes %}
+    {% if (s.gcg_documentos is not none) or s.gcg_error %}
+    <script type="application/json" id="gcg-doc-{{ s.id }}">{{ {
+      "trabajador": s.gcg_trabajador,
+      "documentos": s.gcg_documentos,
+      "consultado_en": s.gcg_consultado_en,
+      "error": s.gcg_error,
+    } | tojson }}</script>
+    {% endif %}
+  {% endfor %}
+</div>
+
+<div id="doc-modal" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="doc-modal-title"></h3>
+      <button type="button" class="modal-close" id="doc-modal-close" aria-label="Cerrar">&times;</button>
+    </div>
+    <p class="muted" id="doc-modal-meta"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Documento</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+        <tbody id="doc-modal-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='doc-modal.js') }}" defer></script>
 {% endblock %}

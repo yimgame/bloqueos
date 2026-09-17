@@ -3,6 +3,7 @@
 de proveedores. Devuelve, para una corrida, la lista de choferes evaluados con
 la fecha de vencimiento de cada documento controlado."""
 import io
+import json
 import re
 import unicodedata
 from datetime import datetime
@@ -10,6 +11,7 @@ from datetime import datetime
 import pandas as pd
 
 import db
+import gcg_api
 
 
 def _norm(s):
@@ -543,6 +545,7 @@ ORIGEN_LABELS = {
     "jrt_auto": "Auto (JRT)",
     "admin_auto": "Auto (Admin)",
     "gcg_auto": "Auto (GCG)",
+    "criticos_verdes": "Auto (críticos verdes)",
 }
 
 _FILL_POR_ESTADO_SOLICITUD = {
@@ -554,7 +557,9 @@ _FILL_POR_ESTADO_SOLICITUD = {
 
 
 def _documentos_por_dni(run_id):
-    """dni -> {documento: fecha_vencimiento (iso) o None} para una corrida."""
+    """dni -> {documento: fecha_vencimiento (iso) o None} para una corrida. Se usa
+    sólo como resguardo para solicitudes viejas, generadas antes de que cada
+    solicitud guardara su propia consulta a GCG."""
     if not run_id:
         return {}
     out = {}
@@ -563,20 +568,37 @@ def _documentos_por_dni(run_id):
     return out
 
 
+def _documentos_desde_gcg_json(gcg_json, documentos_control):
+    """A partir del JSON de GCG guardado en la propia solicitud (la foto real de
+    lo que se controló en ese momento), arma {documento: {fecha, estado, encontrado}}
+    usando el mismo criterio (Nº GCG) que la consulta en vivo. None si no hay JSON
+    guardado (solicitud vieja, o falló la consulta)."""
+    if not gcg_json:
+        return None
+    try:
+        data = json.loads(gcg_json)
+    except (ValueError, TypeError):
+        return None
+    return {d["nombre"]: d for d in gcg_api.evaluar_criticos(data, documentos_control)}
+
+
 def exportar_excel_solicitudes(solicitudes):
     """Auditoría completa de solicitudes de desbloqueo: quién la pidió, quién la
     autorizó (o rechazó) y quién la ejecutó, con fecha y hora de cada paso, y los
-    documentos auditados de esa corrida en una columna por documento con su fecha
-    (igual que en el resto de los exportados)."""
+    documentos tal como se vieron en GCG al momento de esa solicitud (una columna
+    por documento con su fecha), en una columna por documento con su fecha (igual
+    que en el resto de los exportados)."""
     from openpyxl.styles import Font, PatternFill
 
-    documentos_activos = [d["nombre"] for d in db.get_documentos_control(solo_activos=True)]
+    documentos_control = db.get_documentos_control(solo_activos=True)
+    documentos_activos = [d["nombre"] for d in documentos_control]
     columnas_base = ["ID", "Chofer", "DNI", "JRT", "Proveedor", "N° Proveedor"]
     columnas_auditoria = [
         "Origen", "Estado", "Comentario",
         "Solicitado por", "Fecha solicitud",
         "Autorizado por", "Fecha autorización",
         "Ejecutado por", "Fecha ejecución",
+        "Consulta a GCG",
         "Corrida (run_id)",
     ]
     columnas = columnas_base + documentos_activos + columnas_auditoria
@@ -587,10 +609,7 @@ def exportar_excel_solicitudes(solicitudes):
     estados_solicitud = []
     estados_doc_filas = []
     for s in solicitudes:
-        run_id = s.get("run_id")
-        if run_id not in cache_docs_por_run:
-            cache_docs_por_run[run_id] = _documentos_por_dni(run_id)
-        docs_dni = cache_docs_por_run[run_id].get(s["dni"], {})
+        docs_gcg = _documentos_desde_gcg_json(s.get("gcg_json"), documentos_control)
 
         fila = {
             "ID": s["id"],
@@ -601,19 +620,37 @@ def exportar_excel_solicitudes(solicitudes):
             "N° Proveedor": s["nro_proveedor"],
         }
         fila_estados_doc = []
-        for doc_nombre in documentos_activos:
-            if doc_nombre in docs_dni:
-                fecha_str = docs_dni[doc_nombre]
-                if fecha_str:
-                    fecha = datetime.fromisoformat(fecha_str).date()
-                    fila[doc_nombre] = db.fmt_fecha(fecha_str)
-                    fila_estados_doc.append("vencido" if fecha < hoy else "vigente")
+        if docs_gcg is not None:
+            # Foto real controlada por API al momento de esta solicitud puntual.
+            for doc_nombre in documentos_activos:
+                d = docs_gcg.get(doc_nombre)
+                if d and d["encontrado"]:
+                    fila[doc_nombre] = d["fecha"] or "sin dato"
+                    fila_estados_doc.append("vigente" if d["estado"] else "vencido")
                 else:
-                    fila[doc_nombre] = "sin dato"
-                    fila_estados_doc.append("sin_dato")
-            else:
-                fila[doc_nombre] = "—"
-                fila_estados_doc.append(None)
+                    fila[doc_nombre] = "no encontrado en GCG"
+                    fila_estados_doc.append(None)
+        else:
+            # Resguardo: solicitudes generadas antes de guardar la consulta propia,
+            # o a las que les falló la consulta a GCG. Se usan los datos de la
+            # corrida cargada (pueden no coincidir con la fecha real del control).
+            run_id = s.get("run_id")
+            if run_id not in cache_docs_por_run:
+                cache_docs_por_run[run_id] = _documentos_por_dni(run_id)
+            docs_dni = cache_docs_por_run[run_id].get(s["dni"], {})
+            for doc_nombre in documentos_activos:
+                if doc_nombre in docs_dni:
+                    fecha_str = docs_dni[doc_nombre]
+                    if fecha_str:
+                        fecha = datetime.fromisoformat(fecha_str).date()
+                        fila[doc_nombre] = db.fmt_fecha(fecha_str)
+                        fila_estados_doc.append("vencido" if fecha < hoy else "vigente")
+                    else:
+                        fila[doc_nombre] = "sin dato"
+                        fila_estados_doc.append("sin_dato")
+                else:
+                    fila[doc_nombre] = "—"
+                    fila_estados_doc.append(None)
 
         fila.update({
             "Origen": ORIGEN_LABELS.get(s.get("origen"), s.get("origen") or "Manual"),
@@ -625,6 +662,10 @@ def exportar_excel_solicitudes(solicitudes):
             "Fecha autorización": db.fmt_fecha(s["fecha_autorizacion"], con_hora=True) if s.get("fecha_autorizacion") else "",
             "Ejecutado por": s.get("ejecutado_por_nombre") or "",
             "Fecha ejecución": db.fmt_fecha(s["fecha_ejecucion"], con_hora=True) if s.get("fecha_ejecucion") else "",
+            "Consulta a GCG": (
+                db.fmt_fecha(s["gcg_consultado_en"], con_hora=True) if s.get("gcg_consultado_en") and not s.get("gcg_error")
+                else (f"Error: {s['gcg_error']}" if s.get("gcg_error") else "—")
+            ),
             "Corrida (run_id)": s.get("run_id"),
         })
         filas.append(fila)

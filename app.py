@@ -5,6 +5,7 @@ Uso:
     python app.py
     (se sirve en http://0.0.0.0:5000, accesible desde la red)
 """
+import json
 import os
 import re
 import threading
@@ -66,6 +67,31 @@ def _notificar_solicitud(nombre, dni, jrt, razon_social, documentos, fecha_solic
         db.log_evento("mail", f"Error enviando aviso de desbloqueo ({nombre}, DNI {dni}): {e}", usuario=autor_user)
         if autor_user:
             flash(f"No se pudo enviar el mail de aviso de la solicitud: {e}", "error")
+
+
+def _consultar_gcg_para_solicitud(dni):
+    """Consulta a GCG en el momento de generar (o auto-generar) una solicitud de
+    desbloqueo, para dejar guardado el JSON completo que se vio en ese momento
+    (prueba de auditoría) y saber si con eso alcanza para auto-aprobar. Si la
+    consulta falla no corta el flujo (puede pasar que GCG esté caído): la
+    solicitud se genera igual, pero queda constancia del error en vez del JSON."""
+    documentos_activos = db.get_documentos_control(solo_activos=True)
+    numeros_criticos = [d["gcg_doc_numero"] for d in documentos_activos if d.get("gcg_doc_numero")]
+    # Si falta mapear el Nº GCG de algún documento crítico activo, no se puede
+    # confiar en el resultado (habría uno que ni se llegó a mirar): no se
+    # auto-aprueba por "todos verdes" en ese caso.
+    todos_mapeados = bool(documentos_activos) and len(numeros_criticos) == len(documentos_activos)
+    try:
+        data = gcg_api.consultar_trabajador(dni)
+    except Exception as e:
+        return {"gcg_json": None, "gcg_consultado_en": db.now_iso(), "gcg_error": str(e), "todos_verdes": False}
+    todos_verdes = todos_mapeados and gcg_api.documentos_criticos_verdes(data, numeros_criticos)
+    return {
+        "gcg_json": json.dumps(data, ensure_ascii=False),
+        "gcg_consultado_en": db.now_iso(),
+        "gcg_error": None,
+        "todos_verdes": todos_verdes,
+    }
 
 
 def _ejecutar_chequeo_gcg():
@@ -134,6 +160,8 @@ def _ejecutar_chequeo_gcg():
                 "solicitado_por_nombre": actor,
                 "fecha_solicitud": fecha,
                 "origen": "gcg_auto",
+                "gcg_json": json.dumps(data, ensure_ascii=False),
+                "gcg_consultado_en": fecha,
             })
             db.autorizar_solicitud(
                 solicitud_id, None, actor,
@@ -486,10 +514,28 @@ def solicitar_desbloqueo():
         flash("Ya hay una solicitud de desbloqueo activa para ese chofer en esta corrida.", "error")
         return redirect(request.referrer or url_for("dashboard"))
     fecha_solicitud = db.now_iso()
+
+    # Se consulta a GCG en el momento de pedir el desbloqueo (no los datos de la
+    # corrida cargada, que pueden ser viejos): eso queda guardado como prueba de
+    # auditoría y también sirve para decidir el auto-aprobado por críticos verdes.
+    consulta = _consultar_gcg_para_solicitud(dni)
+    if consulta["gcg_error"]:
+        flash(f"No se pudo consultar GCG al generar la solicitud: {consulta['gcg_error']}. Se registra igual.", "error")
+
     # Admin y JRT pueden liberar directamente, sin importar cómo estén los
-    # documentos: se auto-aprueba al pedirlo, no hace falta que otro lo autorice.
-    auto_aprueba = user["rol"] in ("jrt", "admin")
-    origen = "jrt_auto" if user["rol"] == "jrt" else ("admin_auto" if user["rol"] == "admin" else "manual")
+    # documentos. Para cualquier otro rol, si en la consulta a GCG los críticos
+    # ya figuran todos vigentes, también se auto-aprueba (misma regla que el
+    # chequeo automático); si no, queda pendiente de que el JRT la autorice.
+    if user["rol"] == "jrt":
+        origen = "jrt_auto"
+    elif user["rol"] == "admin":
+        origen = "admin_auto"
+    elif consulta["todos_verdes"]:
+        origen = "criticos_verdes"
+    else:
+        origen = "manual"
+    auto_aprueba = origen != "manual"
+
     solicitud_id = db.crear_solicitud({
         "run_id": run_id,
         "dni": dni,
@@ -502,6 +548,9 @@ def solicitar_desbloqueo():
         "solicitado_por_nombre": user["nombre_completo"] or user["username"],
         "fecha_solicitud": fecha_solicitud,
         "origen": origen,
+        "gcg_json": consulta["gcg_json"],
+        "gcg_consultado_en": consulta["gcg_consultado_en"],
+        "gcg_error": consulta["gcg_error"],
     })
     flash(f"Solicitud de desbloqueo registrada para {nombre}.", "ok")
     db.log_evento(
@@ -512,11 +561,15 @@ def solicitar_desbloqueo():
     )
 
     if auto_aprueba:
+        if origen == "criticos_verdes":
+            comentario = "Todos los documentos críticos figuran vigentes en la consulta a GCG al momento de la solicitud."
+        else:
+            comentario = f"Auto-aprobado: lo pidió {user['rol']}, no importa cómo estén los documentos."
         db.autorizar_solicitud(
             solicitud_id, user["id"], user["nombre_completo"] or user["username"],
-            comentario=f"Auto-aprobado: lo pidió {user['rol']}, no importa cómo estén los documentos.",
+            comentario=comentario,
         )
-        db.log_evento("solicitud", f"Solicitud de {nombre} auto-aprobada (la pidió {user['rol']})", usuario=user)
+        db.log_evento("solicitud", f"Solicitud de {nombre} auto-aprobada ({comentario})", usuario=user)
 
     _notificar_solicitud(nombre, dni, jrt, razon_social, documentos, fecha_solicitud,
                           autor_user=user, ya_autorizada=auto_aprueba)
@@ -526,7 +579,24 @@ def solicitar_desbloqueo():
 
 @app.route("/solicitudes")
 def solicitudes():
-    return render_template("solicitudes.html", solicitudes=db.list_solicitudes())
+    catalogo = db.get_catalogo_documentos()
+    lista = db.list_solicitudes()
+    for s in lista:
+        s["gcg_documentos"] = None
+        s["gcg_trabajador"] = None
+        if s.get("gcg_json"):
+            try:
+                data = json.loads(s["gcg_json"])
+            except (ValueError, TypeError):
+                data = None
+            if data:
+                s["gcg_documentos"] = gcg_api.listar_todos_los_documentos(data, catalogo)
+                s["gcg_trabajador"] = {
+                    "nombre": f"{data.get('apellido', '')}, {data.get('nombre', '')}".strip(", "),
+                    "dni": data.get("dni"),
+                    "habilitado": data.get("habilitado"),
+                }
+    return render_template("solicitudes.html", solicitudes=lista)
 
 
 @app.route("/solicitudes/export.xlsx")

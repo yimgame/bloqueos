@@ -124,7 +124,10 @@ CREATE TABLE IF NOT EXISTS solicitudes_desbloqueo (
     ejecutado_por_id INTEGER,
     ejecutado_por_nombre TEXT,
     fecha_ejecucion TEXT,
-    origen TEXT NOT NULL DEFAULT 'manual'
+    origen TEXT NOT NULL DEFAULT 'manual',
+    gcg_json TEXT,
+    gcg_consultado_en TEXT,
+    gcg_error TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_solicitudes_dni ON solicitudes_desbloqueo(dni);
@@ -305,6 +308,12 @@ def _migrar_columnas(conn):
     cols_solicitudes = {r["name"] for r in conn.execute("PRAGMA table_info(solicitudes_desbloqueo)")}
     if "origen" not in cols_solicitudes:
         conn.execute("ALTER TABLE solicitudes_desbloqueo ADD COLUMN origen TEXT NOT NULL DEFAULT 'manual'")
+    if "gcg_json" not in cols_solicitudes:
+        conn.execute("ALTER TABLE solicitudes_desbloqueo ADD COLUMN gcg_json TEXT")
+    if "gcg_consultado_en" not in cols_solicitudes:
+        conn.execute("ALTER TABLE solicitudes_desbloqueo ADD COLUMN gcg_consultado_en TEXT")
+    if "gcg_error" not in cols_solicitudes:
+        conn.execute("ALTER TABLE solicitudes_desbloqueo ADD COLUMN gcg_error TEXT")
 
     cols_documentos = {r["name"] for r in conn.execute("PRAGMA table_info(documentos_control)")}
     if "gcg_doc_numero" not in cols_documentos:
@@ -686,14 +695,16 @@ def set_usuario_password(user_id, password):
 # ---------------------------------------------------------------------------
 
 def crear_solicitud(row):
-    row = {"origen": "manual", **row}
+    row = {"origen": "manual", "gcg_json": None, "gcg_consultado_en": None, "gcg_error": None, **row}
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO solicitudes_desbloqueo
                (run_id, dni, nombre, jrt, nro_proveedor, razon_social, documentos,
-                estado, solicitado_por_id, solicitado_por_nombre, fecha_solicitud, origen)
+                estado, solicitado_por_id, solicitado_por_nombre, fecha_solicitud, origen,
+                gcg_json, gcg_consultado_en, gcg_error)
                VALUES (:run_id, :dni, :nombre, :jrt, :nro_proveedor, :razon_social, :documentos,
-                       'solicitado', :solicitado_por_id, :solicitado_por_nombre, :fecha_solicitud, :origen)""",
+                       'solicitado', :solicitado_por_id, :solicitado_por_nombre, :fecha_solicitud, :origen,
+                       :gcg_json, :gcg_consultado_en, :gcg_error)""",
             row,
         )
         return cur.lastrowid
