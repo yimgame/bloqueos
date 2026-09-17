@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Bloqueo de choferes{% endblock %}
+
+{% macro doc_cell(docs, nombre) %}
+  {% set found = docs | selectattr('documento', 'equalto', nombre) | list %}
+  {% if found %}
+    {% set d = found[0] %}
+    <span class="doc-chip doc-chip-{{ d.estado }}">{{ (d.fecha|fecha) if d.fecha else 'sin dato' }}</span>
+  {% else %}
+    <span class="muted">—</span>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+
+{% if not run %}
+  <section class="panel">
+    {% if current_user.rol == 'admin' %}
+      <p>Todavía no hay ninguna corrida procesada. Subí un exportado de GCG en
+         <a href="{{ url_for('admin', tab='datos') }}">Configuración → Datos de referencia</a>
+         (antes cargá ahí también el Maestro de proveedores y dni.xlsx).</p>
+    {% else %}
+      <p>Todavía no hay ninguna corrida procesada. Pedile a un administrador que suba un exportado de GCG en
+         Configuración → Datos de referencia.</p>
+    {% endif %}
+  </section>
+{% else %}
+
+  <section class="panel run-info">
+    <div><strong>Corrida:</strong> {{ run.fecha_run|fecha(true) }} · {{ run.archivo_origen }}</div>
+    <div class="muted">
+      {{ run.total_evaluados }} choferes evaluados ·
+      {{ run.total_excluidos }} excluidos (extranjero/independiente) ·
+      {{ run.total_choferes_sin_proveedor }} sin número de proveedor
+    </div>
+  </section>
+
+  <section class="panel filters">
+    <form method="get" class="inline-form">
+      <input type="hidden" name="run_id" value="{{ run.id }}">
+      <label>JRT
+        <select name="jrt">
+          <option value="" {% if not jrt_filtro %}selected{% endif %}>Todos</option>
+          {% for j in jrts %}
+            <option value="{{ j }}" {% if j == jrt_filtro %}selected{% endif %}>{{ j }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">Aplicar</button>
+    </form>
+  </section>
+
+  <div class="tabs">
+    <button type="button" class="tab-btn active" data-tab="tab-vencidos">
+      Vencidos <span class="badge badge-red">{{ resultado.vencidos|length }}</span>
+    </button>
+    <button type="button" class="tab-btn" data-tab="tab-proximos">
+      Próximos a vencer <span class="badge badge-amber">{{ resultado.proximos|length }}</span>
+    </button>
+    <button type="button" class="tab-btn" data-tab="tab-mails">
+      Mails por transporte <span class="badge badge-amber">{{ transportes|length }}</span>
+    </button>
+  </div>
+
+  <section id="tab-vencidos" class="tab-panel">
+
+    <section class="panel resumen-jrt-panel">
+      <h2>Resumen por JRT — bloquear</h2>
+      <p class="muted">Corte al {{ resultado.hoy|fecha }}. Ordenado de mayor a menor por defecto — hacé clic en un encabezado para cambiar el orden.</p>
+      <table class="resumen-table enhanced-table">
+        <thead><tr><th>JRT</th><th>Bloquear</th></tr></thead>
+        <tbody>
+          {% for jrt, n in resultado.resumen_jrt_vencidos.filas %}
+          <tr><td>{{ jrt }}</td><td>{{ n }}</td></tr>
+          {% endfor %}
+          <tr class="total-row"><td>Total general</td><td>{{ resultado.resumen_jrt_vencidos.total }}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Vencidos <span class="badge badge-red">{{ resultado.vencidos|length }}</span></h2>
+        <a class="btn-link" href="{{ url_for('exportar', tipo='vencidos', run_id=run.id, dias=dias_alerta, jrt=jrt_filtro, sort=orden, dir=direccion) }}">Exportar a Excel</a>
+      </div>
+      <p class="muted">Tienen al menos un documento crítico vencido a hoy ({{ resultado.hoy|fecha }}). Corresponde bloquear.
+         Se muestran todos los documentos auditados con su fecha tal cual el exportado.</p>
+      {% if resultado.vencidos %}
+      <div class="table-wrap">
+      <table class="enhanced-table filterable">
+        <thead>
+          <tr>
+            <th>Chofer</th>
+            <th>DNI</th>
+            <th>JRT</th>
+            <th>Proveedor</th>
+            {% for doc_nombre in documentos_activos %}
+            <th>{{ doc_nombre }}</th>
+            {% endfor %}
+            <th data-no-sort data-no-filter>Desbloqueo</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in resultado.vencidos %}
+          <tr>
+            <td>{{ c.nombre }}</td>
+            <td>{{ c.dni }}</td>
+            <td>{{ c.jrt }}</td>
+            <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>
+            {% for doc_nombre in documentos_activos %}
+            <td>{{ doc_cell(c.docs_todos, doc_nombre) }}</td>
+            {% endfor %}
+            <td>
+              {% set sol = solicitudes_por_dni.get(c.dni) %}
+              {% if sol %}
+                <span class="estado-chip estado-{{ sol.estado }}">{{ sol.estado }}</span>
+                <div class="muted small">por {{ sol.solicitado_por_nombre }}</div>
+              {% else %}
+                <form action="{{ url_for('solicitar_desbloqueo') }}" method="post" class="inline-form-tight">
+                  <input type="hidden" name="run_id" value="{{ run.id }}">
+                  <input type="hidden" name="dni" value="{{ c.dni }}">
+                  <input type="hidden" name="nombre" value="{{ c.nombre }}">
+                  <input type="hidden" name="jrt" value="{{ c.jrt }}">
+                  <input type="hidden" name="nro_proveedor" value="{{ c.nro_proveedor or '' }}">
+                  <input type="hidden" name="razon_social" value="{{ c.razon_social or '' }}">
+                  <input type="hidden" name="documentos" value="{{ c.docs_vencidos|map(attribute='documento')|join(', ') }}">
+                  <button type="submit" class="btn-muted">Solicitar desbloqueo</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+        <p class="muted">No hay choferes vencidos con estos filtros.</p>
+      {% endif %}
+    </section>
+  </section>
+
+  <section id="tab-proximos" class="tab-panel" hidden>
+
+    <section class="panel resumen-jrt-panel">
+      <h2>Resumen por JRT — próximos a vencer</h2>
+      <p class="muted">Vencen dentro de los próximos {{ resultado.dias_alerta }} días. Ordenado de mayor a menor por defecto — hacé clic en un encabezado para cambiar el orden.</p>
+      <table class="resumen-table enhanced-table">
+        <thead><tr><th>JRT</th><th>Próximos</th></tr></thead>
+        <tbody>
+          {% for jrt, n in resultado.resumen_jrt_proximos.filas %}
+          <tr><td>{{ jrt }}</td><td>{{ n }}</td></tr>
+          {% endfor %}
+          <tr class="total-row"><td>Total general</td><td>{{ resultado.resumen_jrt_proximos.total }}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Próximos a vencer <span class="badge badge-amber">{{ resultado.proximos|length }}</span></h2>
+        <a class="btn-link" href="{{ url_for('exportar', tipo='proximos', run_id=run.id, dias=dias_alerta, jrt=jrt_filtro, sort=orden, dir=direccion) }}">Exportar a Excel</a>
+      </div>
+      <p class="muted">Todavía no están vencidos. Se muestran todos los documentos auditados con su fecha tal cual el exportado.</p>
+      {% if resultado.proximos %}
+      <div class="table-wrap">
+      <table class="enhanced-table filterable">
+        <thead>
+          <tr>
+            <th>Chofer</th>
+            <th>DNI</th>
+            <th>JRT</th>
+            <th>Proveedor</th>
+            {% for doc_nombre in documentos_activos %}
+            <th>{{ doc_nombre }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in resultado.proximos %}
+          <tr>
+            <td>{{ c.nombre }}</td>
+            <td>{{ c.dni }}</td>
+            <td>{{ c.jrt }}</td>
+            <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>
+            {% for doc_nombre in documentos_activos %}
+            <td>{{ doc_cell(c.docs_todos, doc_nombre) }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+        <p class="muted">No hay choferes próximos a vencer con estos filtros.</p>
+      {% endif %}
+    </section>
+  </section>
+
+  <section id="tab-mails" class="tab-panel" hidden>
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Mails por transporte <span class="badge badge-amber">{{ transportes|length }}</span></h2>
+      </div>
+      <p class="muted">Un mail por transporte con el Excel de sus choferes bloqueados y próximos a bloquear
+         (a {{ resultado.dias_alerta }} días, con DNI incluido). Van siempre en copia (CC): el JRT del transporte,
+         los analistas a su cargo, los administradores, y la lista adicional cargada en
+         <a href="{{ url_for('admin', tab='smtp') }}">Configuración</a> — todo según los mails cargados en
+         <a href="{{ url_for('admin_usuarios') }}">Usuarios</a>.</p>
+      {% if transportes %}
+      <div class="table-wrap">
+      <table class="enhanced-table filterable">
+        <thead>
+          <tr>
+            <th>Proveedor</th>
+            <th>JRT</th>
+            <th>Mail proveedor</th>
+            <th>CC</th>
+            <th>Bloqueados</th>
+            <th>Próximos</th>
+            <th data-no-sort data-no-filter></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in transportes %}
+          <tr>
+            <td>{{ t.razon_social }}</td>
+            <td>{{ t.jrt or '—' }}</td>
+            <td>{{ t.mail_proveedor or '—' }}</td>
+            <td class="small">{{ t.cc_preview|join(', ') if t.cc_preview else '—' }}</td>
+            <td>{{ t.vencidos|length }}</td>
+            <td>{{ t.proximos|length }}</td>
+            <td>
+              {% if t.mail_proveedor %}
+              <form action="{{ url_for('enviar_mail_transporte') }}" method="post" class="inline-form-tight">
+                <input type="hidden" name="run_id" value="{{ run.id }}">
+                <input type="hidden" name="dias" value="{{ dias_alerta }}">
+                <input type="hidden" name="nro_proveedor" value="{{ t.nro_proveedor or '' }}">
+                <input type="hidden" name="razon_social" value="{{ t.razon_social or '' }}">
+                <button type="submit" class="btn-ok btn-enviar-mail"
+                  data-proveedor="{{ t.razon_social }}"
+                  data-mail="{{ t.mail_proveedor }}"
+                  data-cc="{{ t.cc_preview|join(', ') }}"
+                  data-bloqueados="{{ t.vencidos|length }}"
+                  data-proximos="{{ t.proximos|length }}">Enviar mail</button>
+              </form>
+              {% else %}
+                <span class="muted small">sin mail de proveedor</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+        <p class="muted">No hay transportes con choferes bloqueados o próximos a vencer con estos filtros.</p>
+      {% endif %}
+    </section>
+  </section>
+
+{% endif %}
+
+<script>
+document.querySelectorAll('.tab-btn').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+    document.querySelectorAll('.tab-panel').forEach(function (p) { p.hidden = true; });
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).hidden = false;
+  });
+});
+
+document.querySelectorAll('.btn-enviar-mail').forEach(function (btn) {
+  btn.addEventListener('click', function (ev) {
+    var d = btn.dataset;
+    var msg = 'Enviar mail a ' + d.proveedor + ' (' + d.mail + ')\n' +
+      'CC: ' + (d.cc ? d.cc : 'sin copia configurada') + '\n' +
+      'Se adjunta el Excel con ' + d.bloqueados + ' chofer(es) bloqueado(s) y ' + d.proximos +
+      ' próximo(s) a vencer, con su DNI.\n\n¿Confirmás el envío?';
+    if (!confirm(msg)) {
+      ev.preventDefault();
+    }
+  });
+});
+</script>
+{% endblock %}

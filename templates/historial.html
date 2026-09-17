@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Historial · Bloqueo de choferes{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Historial de corridas</h2>
+  {% if runs %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Fecha</th><th>Archivo</th><th>Evaluados</th><th>Excluidos</th><th>Sin proveedor</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td>{{ r.fecha_run|fecha(true) }}</td>
+        <td>{{ r.archivo_origen }}</td>
+        <td>{{ r.total_evaluados }}</td>
+        <td>{{ r.total_excluidos }}</td>
+        <td>{{ r.total_choferes_sin_proveedor }}</td>
+        <td><a href="{{ url_for('dashboard', run_id=r.id) }}">Ver</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p class="muted">Todavía no se procesó ninguna corrida.</p>
+  {% endif %}
+</section>
+{% endblock %}

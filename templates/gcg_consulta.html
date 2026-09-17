@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Consultar GCG · Bloqueo de choferes{% endblock %}
+{% block content %}
+
+<section class="panel">
+  <h2>Consultar chofer en GCG</h2>
+  <p class="muted">Busca en vivo (no en la última corrida guardada) el estado actual de un chofer en GCG y te dice
+     si con eso alcanza para liberarlo o si todavía le falta algo.</p>
+  <form method="get" class="inline-form">
+    <label>DNI
+      <input type="text" name="dni" value="{{ dni_buscado }}" placeholder="Sin puntos ni guiones" autofocus required>
+    </label>
+    <button type="submit">Consultar</button>
+  </form>
+</section>
+
+{% if error %}
+  <section class="panel">
+    <p class="flash flash-error">{{ error }}</p>
+  </section>
+{% endif %}
+
+{% if trabajador %}
+<section class="panel">
+  <div class="panel-header-row">
+    <h2>{{ trabajador.nombre }} <span class="muted small">DNI {{ trabajador.dni }}</span></h2>
+    {% if todos_verdes %}
+      <span class="estado-chip estado-ejecutado">se puede liberar</span>
+    {% else %}
+      <span class="estado-chip estado-rechazado">sigue bloqueado</span>
+    {% endif %}
+  </div>
+  <p class="muted">
+    {{ proveedor.razon_social if proveedor else 'Sin proveedor cargado en el maestro' }}
+    {% if proveedor and proveedor.jrt %} · JRT {{ proveedor.jrt }}{% endif %}
+    · Habilitación general en GCG: {{ 'habilitado' if trabajador.habilitado_gcg else 'no habilitado' }}
+    (puede diferir de nuestro criterio: acá sólo miramos los documentos críticos que controlamos)
+  </p>
+
+  {% if todos_verdes %}
+    <p class="flash flash-ok">Todos los documentos críticos que controlamos figuran vigentes en GCG. Se puede liberar.</p>
+  {% else %}
+    <p class="flash flash-error">
+      Todavía falta:
+      {{ criticos|selectattr('estado', 'equalto', false)|map(attribute='nombre')|join(', ') }}
+    </p>
+  {% endif %}
+
+  <h2>Documentos críticos que controlamos</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Documento</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+    <tbody>
+      {% for d in criticos %}
+      <tr>
+        <td>{{ d.nombre }}{% if not d.numero %} <span class="tag">sin Nº GCG mapeado</span>{% endif %}</td>
+        <td>{{ d.fecha or '—' }}</td>
+        <td>
+          {% if d.estado is sameas true %}
+            <span class="doc-chip doc-chip-vigente">vigente</span>
+          {% elif d.estado is sameas false %}
+            <span class="doc-chip doc-chip-vencido">vencido</span>
+          {% else %}
+            <span class="doc-chip doc-chip-sin_dato">no encontrado en GCG</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <div class="panel-header-row" style="margin-top: 16px;">
+    <h2>Solicitar desbloqueo</h2>
+  </div>
+  {% if solicitud_activa %}
+    <p>Ya hay una solicitud activa para este chofer en la corrida actual:
+       <span class="estado-chip estado-{{ solicitud_activa.estado }}">{{ solicitud_activa.estado }}</span>
+       (pedida por {{ solicitud_activa.solicitado_por_nombre }}). Revisala en
+       <a href="{{ url_for('solicitudes') }}">Solicitudes</a>.</p>
+  {% elif not run %}
+    <p class="muted">Todavía no hay ninguna corrida procesada; subí un exportado de GCG desde el dashboard antes de pedir un desbloqueo.</p>
+  {% else %}
+    <p class="muted">
+      {% if current_user.rol in ('admin', 'jrt') %}
+        Como {{ current_user.rol }} podés liberarlo directamente, esté como esté la documentación: queda auto-aprobado.
+      {% else %}
+        Se registra como solicitud y queda pendiente de que el JRT la autorice (aunque haya documentos vencidos).
+      {% endif %}
+    </p>
+    <form action="{{ url_for('solicitar_desbloqueo') }}" method="post" class="inline-form-tight">
+      <input type="hidden" name="run_id" value="{{ run.id }}">
+      <input type="hidden" name="dni" value="{{ trabajador.dni }}">
+      <input type="hidden" name="nombre" value="{{ trabajador.nombre }}">
+      <input type="hidden" name="jrt" value="{{ proveedor.jrt if proveedor else '' }}">
+      <input type="hidden" name="nro_proveedor" value="{{ proveedor.nro_proveedor if proveedor else '' }}">
+      <input type="hidden" name="razon_social" value="{{ proveedor.razon_social if proveedor else '' }}">
+      <input type="hidden" name="documentos" value="{{ documentos_txt }}">
+      <button type="submit" class="btn-ok">
+        {{ 'Liberar' if current_user.rol in ('admin', 'jrt') else 'Solicitar desbloqueo' }}
+      </button>
+    </form>
+  {% endif %}
+
+  <h2 style="margin-top: 16px;">Todos los documentos en GCG</h2>
+  <p class="muted">Listado completo que trae la API para este chofer, no sólo los críticos.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Documento</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+    <tbody>
+      {% for d in documentos_todos %}
+      <tr>
+        <td>{{ d.nombre }}</td>
+        <td>{{ d.fecha or '—' }}</td>
+        <td>
+          {% if d.estado %}
+            <span class="doc-chip doc-chip-vigente">vigente</span>
+          {% else %}
+            <span class="doc-chip doc-chip-vencido">vencido</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Solicitudes de desbloqueo{% endblock %}
+
+{% macro origen_chip(origen) %}
+  {% if origen == 'gcg_auto' %}
+    <span class="tag" title="Generada sola al ver todo verde en GCG">Auto GCG</span>
+  {% elif origen == 'jrt_auto' %}
+    <span class="tag" title="El JRT la pidió y quedó auto-aprobada">Auto JRT</span>
+  {% elif origen == 'admin_auto' %}
+    <span class="tag" title="Un administrador la pidió y quedó auto-aprobada">Auto Admin</span>
+  {% else %}
+    <span class="tag">Manual</span>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<section class="panel">
+  <div class="panel-header-row">
+    <h2>Solicitudes de desbloqueo</h2>
+    <a class="btn-link" href="{{ url_for('solicitudes_exportar') }}">Exportar a Excel</a>
+  </div>
+  <p class="muted">Auditoría: quién pidió el desbloqueo de cada chofer, quién lo autorizó y quién lo ejecutó en GCG.</p>
+  {% if solicitudes %}
+  <div class="table-wrap">
+  <table class="enhanced-table filterable">
+    <thead>
+      <tr>
+        <th>Chofer</th><th>DNI</th><th>JRT</th><th>Proveedor</th><th>Documentos</th>
+        <th>Origen</th><th>Estado</th><th>Solicitado</th><th>Autorizado</th><th>Ejecutado</th>
+        <th data-no-sort data-no-filter>Acciones</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in solicitudes %}
+      <tr>
+        <td>{{ s.nombre }}</td>
+        <td>{{ s.dni }}</td>
+        <td>{{ s.jrt }}</td>
+        <td>{{ s.razon_social or '—' }}</td>
+        <td>{{ s.documentos }}</td>
+        <td>{{ origen_chip(s.origen) }}</td>
+        <td><span class="estado-chip estado-{{ s.estado }}">{{ s.estado }}</span></td>
+        <td>{{ s.solicitado_por_nombre }}<div class="muted small">{{ s.fecha_solicitud|fecha(true) if s.fecha_solicitud else '' }}</div></td>
+        <td>
+          {% if s.autorizado_por_nombre %}
+            {{ s.autorizado_por_nombre }}<div class="muted small">{{ s.fecha_autorizacion|fecha(true) if s.fecha_autorizacion else '' }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if s.ejecutado_por_nombre %}
+            {{ s.ejecutado_por_nombre }}<div class="muted small">{{ s.fecha_ejecucion|fecha(true) if s.fecha_ejecucion else '' }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td class="acciones-cell">
+          {% if s.estado == 'solicitado' %}
+            <form action="{{ url_for('solicitud_autorizar', solicitud_id=s.id) }}" method="post" class="inline-form-tight">
+              <button type="submit" class="btn-ok">Autorizar</button>
+            </form>
+            <form action="{{ url_for('solicitud_rechazar', solicitud_id=s.id) }}" method="post" class="inline-form-tight">
+              <button type="submit" class="btn-danger">Rechazar</button>
+            </form>
+          {% elif s.estado == 'autorizado' and current_user.rol == 'admin' %}
+            <form action="{{ url_for('solicitud_ejecutar', solicitud_id=s.id) }}" method="post" class="inline-form-tight">
+              <button type="submit">Marcar ejecutado</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p class="muted">Todavía no se pidió ningún desbloqueo.</p>
+  {% endif %}
+</section>
+{% endblock %}

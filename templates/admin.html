@@ -1,0 +1,459 @@
+{% extends "base.html" %}
+{% block title %}Configuración · Bloqueo de choferes{% endblock %}
+{% block content %}
+
+<div class="tabs">
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'general' }}" data-tab="tab-general">General</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'smtp' }}" data-tab="tab-smtp">SMTP y mail</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'documentos' }}" data-tab="tab-documentos">Documentos</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'datos' }}" data-tab="tab-datos">Datos de referencia</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'usuarios' }}" data-tab="tab-usuarios">Usuarios</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'gcg' }}" data-tab="tab-gcg">GCG</button>
+  <button type="button" class="tab-btn {{ 'active' if active_tab == 'log' }}" data-tab="tab-log">Actividad</button>
+</div>
+
+<section id="tab-general" class="tab-panel" {{ '' if active_tab == 'general' else 'hidden' }}>
+  <section class="panel">
+    <h2>General</h2>
+    <p class="muted">Días de anticipo por defecto para "Próximos a vencer" en el dashboard (se puede seguir
+       ajustando puntualmente desde el filtro del dashboard).</p>
+    <form action="{{ url_for('admin_config') }}" method="post" class="inline-form">
+      <input type="hidden" name="tab" value="general">
+      <input type="hidden" name="smtp_host" value="{{ config.smtp_host }}">
+      <input type="hidden" name="smtp_port" value="{{ config.smtp_port }}">
+      <input type="hidden" name="smtp_user" value="{{ config.smtp_user }}">
+      <input type="hidden" name="smtp_from" value="{{ config.smtp_from }}">
+      <input type="hidden" name="smtp_use_tls" value="{{ config.smtp_use_tls }}">
+      <input type="hidden" name="mail_cc_adicional" value="{{ config.mail_cc_adicional }}">
+      <input type="hidden" name="mail_asunto" value="{{ config.mail_asunto }}">
+      <input type="hidden" name="mail_cuerpo" value="{{ config.mail_cuerpo }}">
+      <label>Días de anticipo por defecto
+        <input type="number" name="dias_alerta_default" min="0" max="90" value="{{ config.dias_alerta_default }}">
+      </label>
+      <button type="submit">Guardar</button>
+    </form>
+  </section>
+</section>
+
+<section id="tab-smtp" class="tab-panel" {{ '' if active_tab == 'smtp' else 'hidden' }}>
+  <section class="panel">
+    <h2>SMTP / Envío de mails</h2>
+    <p class="muted">Datos del servidor de correo usado para el botón "Enviar mail" del dashboard, y el texto
+       genérico del mail. El texto admite las variables {{ '{proveedor}' }}, {{ '{jrt}' }}, {{ '{fecha}' }},
+       {{ '{bloqueados}' }} y {{ '{proximos}' }}.</p>
+    <p class="muted">El CC de cada mail a un transporte se arma solo: el JRT del transporte, los analistas a su
+       cargo (cargados en la pestaña Usuarios) y todos los administradores. La lista de abajo es para sumar
+       direcciones extra que no son usuarios del sistema.</p>
+    <form action="{{ url_for('admin_config') }}" method="post" class="inline-form">
+      <input type="hidden" name="tab" value="smtp">
+      <input type="hidden" name="dias_alerta_default" value="{{ config.dias_alerta_default }}">
+      <label>Servidor SMTP
+        <input type="text" name="smtp_host" value="{{ config.smtp_host }}" placeholder="smtp.gmail.com">
+      </label>
+      <label>Puerto
+        <input type="number" name="smtp_port" value="{{ config.smtp_port }}" placeholder="587">
+      </label>
+      <label>Usuario
+        <input type="text" name="smtp_user" value="{{ config.smtp_user }}">
+      </label>
+      <label>Contraseña
+        <input type="password" name="smtp_password" placeholder="{{ '(sin cambios)' if config.smtp_password else '' }}">
+      </label>
+      <label>Mail remitente
+        <input type="text" name="smtp_from" value="{{ config.smtp_from }}" placeholder="igual al usuario si se deja vacío">
+      </label>
+      <label>
+        <input type="checkbox" name="smtp_use_tls" value="1" {% if config.smtp_use_tls == '1' %}checked{% endif %}>
+        Usar TLS
+      </label>
+      <label style="flex-basis: 100%;">CC adicional (direcciones separadas por coma, no ligadas a un usuario)
+        <input type="text" name="mail_cc_adicional" value="{{ config.mail_cc_adicional }}" style="width: 100%;" placeholder="compa1@empresa.com, compa2@empresa.com">
+      </label>
+      <label style="flex-basis: 100%;">Asunto del mail
+        <input type="text" name="mail_asunto" value="{{ config.mail_asunto }}" style="width: 100%;">
+      </label>
+      <label style="flex-basis: 100%;">Cuerpo del mail
+        <textarea name="mail_cuerpo" rows="6" style="width: 100%; font: inherit; padding: 8px; border: 1px solid var(--border); border-radius: 6px;">{{ config.mail_cuerpo }}</textarea>
+      </label>
+      <button type="submit">Guardar</button>
+    </form>
+  </section>
+</section>
+
+<section id="tab-documentos" class="tab-panel" {{ '' if active_tab == 'documentos' else 'hidden' }}>
+  <section class="panel">
+    <h2>Documentos críticos controlados</h2>
+    <p class="muted">Estos son los nombres de columna que se buscan en el exportado de GCG. Desactivá los que no
+       quieras controlar, o agregá uno nuevo copiando el nombre exacto de la columna del exportado.</p>
+    <p class="muted">La columna <strong>Nº GCG</strong> es el número de documento del catálogo de GCG (ver
+       gcg/criticos.xlsx) que le corresponde a cada uno — lo usa el chequeo automático para preguntarle a la
+       API de GCG si ese documento ya está vigente. Sin este número no se puede auto-generar el desbloqueo.</p>
+
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Documento</th><th>Nº GCG</th><th>Activo</th><th></th></tr></thead>
+      <tbody>
+        {% for d in documentos %}
+        <tr>
+          <td>
+            <form action="{{ url_for('admin_doc_renombrar', doc_id=d.id) }}" method="post" class="inline-form-tight">
+              <input type="text" name="nombre" value="{{ d.nombre }}" style="min-width: 260px;">
+              <button type="submit" class="btn-muted">Guardar</button>
+            </form>
+          </td>
+          <td>
+            <form action="{{ url_for('admin_doc_gcg_numero', doc_id=d.id) }}" method="post" class="inline-form-tight">
+              <input type="number" name="gcg_doc_numero" value="{{ d.gcg_doc_numero or '' }}" min="1" style="width: 80px;">
+              <button type="submit" class="btn-muted">Guardar</button>
+            </form>
+          </td>
+          <td>
+            <form action="{{ url_for('admin_doc_toggle', doc_id=d.id) }}" method="post" class="inline-form-tight">
+              <input type="hidden" name="activo" value="{{ 0 if d.activo else 1 }}">
+              <button type="submit" class="{{ 'btn-ok' if d.activo else 'btn-muted' }}">
+                {{ 'Sí' if d.activo else 'No' }}
+              </button>
+            </form>
+          </td>
+          <td>
+            <form action="{{ url_for('admin_doc_borrar', doc_id=d.id) }}" method="post" class="inline-form-tight"
+                  onsubmit="return confirm('¿Quitar este documento del control?');">
+              <button type="submit" class="btn-danger">Quitar</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    <form action="{{ url_for('admin_doc_agregar') }}" method="post" class="inline-form">
+      <label>Agregar documento
+        <input type="text" name="nombre" placeholder="Nombre exacto de la columna en GCG" required>
+      </label>
+      <button type="submit">Agregar</button>
+    </form>
+  </section>
+</section>
+
+<section id="tab-datos" class="tab-panel" {{ '' if active_tab == 'datos' else 'hidden' }}>
+  <section class="panel">
+    <h2>Nueva corrida (exportado de GCG)</h2>
+    <p class="muted">Al procesarla, dispara al toque (sin esperar los {{ gcg_intervalo_min }} minutos) el chequeo
+       automático contra GCG: si algún chofer ya tiene todo en verde, le genera la solicitud de desbloqueo.</p>
+    <form action="{{ url_for('subir_export') }}" method="post" enctype="multipart/form-data" class="inline-form">
+      <label>Nuevo exportado de GCG (.xlsx)
+        <input type="file" name="archivo" accept=".xlsx" required>
+      </label>
+      <button type="submit">Procesar y guardar corrida</button>
+    </form>
+    {% if run %}
+      <p class="muted">Última corrida: {{ run.fecha_run|fecha(true) }} · {{ run.archivo_origen }}
+         ({{ run.total_evaluados }} choferes evaluados)</p>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Datos de referencia</h2>
+    <p class="muted">Se guardan en la base (SQLite) y se pisan cada vez que subís una versión nueva.</p>
+
+    <div class="two-col">
+      <form action="{{ url_for('admin_maestro') }}" method="post" enctype="multipart/form-data" class="inline-form">
+        <label>Maestro de proveedores (.xlsx)
+          <input type="file" name="archivo" accept=".xlsx" required>
+        </label>
+        <button type="submit">Cargar maestro</button>
+        <span class="muted">Actual: {{ counts.proveedores }} proveedores</span>
+      </form>
+
+      <form action="{{ url_for('admin_dni') }}" method="post" enctype="multipart/form-data" class="inline-form">
+        <label>dni.xlsx (DNI → N° de proveedor)
+          <input type="file" name="archivo" accept=".xlsx" required>
+        </label>
+        <button type="submit">Cargar dni.xlsx</button>
+        <span class="muted">Actual: {{ counts.dni_proveedor }} choferes</span>
+      </form>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Estado de bloqueos actual</h2>
+    <p class="muted">Exportado del sistema (no de GCG) con quiénes están bloqueados hoy de verdad. El chequeo
+       automático de GCG lo usa como filtro: si un chofer no figura acá, ya está liberado y no le gasta una
+       consulta a la API ni le genera nada.</p>
+    <form action="{{ url_for('admin_estado_bloqueos') }}" method="post" enctype="multipart/form-data" class="inline-form">
+      <label>Estado de bloqueos (.xlsx)
+        <input type="file" name="archivo" accept=".xlsx" required>
+      </label>
+      <button type="submit">Cargar estado de bloqueos</button>
+      <span class="muted">
+        Actual: {{ counts.estado_bloqueos }} bloqueados
+        {% if config.estado_bloqueos_actualizado_en %}· cargado el {{ config.estado_bloqueos_actualizado_en|fecha(true) }}{% endif %}
+      </span>
+    </form>
+  </section>
+</section>
+
+<section id="tab-usuarios" class="tab-panel" {{ '' if active_tab == 'usuarios' else 'hidden' }}>
+  <section class="panel">
+    <h2>Usuarios</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Usuario</th><th>Nombre</th><th>JRT</th><th>Mail</th><th>Rol</th><th>Activo</th><th>Restablecer contraseña</th></tr></thead>
+      <tbody>
+        {% for u in usuarios %}
+        <tr>
+          <td>{{ u.username }}</td>
+          <td>{{ u.nombre_completo }}</td>
+          <td>{{ u.jrt or '—' }}</td>
+          <td>
+            <form action="{{ url_for('admin_usuarios_mail', user_id=u.id) }}" method="post" class="inline-form-tight">
+              <input type="email" name="mail" value="{{ u.mail or '' }}" placeholder="mail@dominio.com">
+              <button type="submit" class="btn-muted">Guardar</button>
+            </form>
+          </td>
+          <td>{{ u.rol }}</td>
+          <td>
+            <form action="{{ url_for('admin_usuarios_toggle', user_id=u.id) }}" method="post" class="inline-form-tight">
+              <input type="hidden" name="activo" value="{{ 0 if u.activo else 1 }}">
+              <button type="submit" class="{{ 'btn-ok' if u.activo else 'btn-muted' }}">{{ 'Sí' if u.activo else 'No' }}</button>
+            </form>
+          </td>
+          <td>
+            <form action="{{ url_for('admin_usuarios_resetear', user_id=u.id) }}" method="post" class="inline-form-tight">
+              <input type="password" name="password" placeholder="nueva contraseña" required>
+              <button type="submit">Cambiar</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Agregar usuario</h2>
+    <form action="{{ url_for('admin_usuarios_agregar') }}" method="post" class="inline-form">
+      <label>Usuario
+        <input type="text" name="username" required>
+      </label>
+      <label>Contraseña
+        <input type="password" name="password" required>
+      </label>
+      <label>Nombre completo
+        <input type="text" name="nombre_completo">
+      </label>
+      <label>JRT a cargo (rol jrt) / JRT del que depende (rol analista)
+        <input type="text" name="jrt" placeholder="ej: Ailen Doorman">
+      </label>
+      <label>Mail
+        <input type="email" name="mail" placeholder="mail@dominio.com">
+      </label>
+      <label>Rol
+        <select name="rol">
+          <option value="jrt">jrt</option>
+          <option value="analista">analista</option>
+          <option value="admin">admin</option>
+        </select>
+      </label>
+      <button type="submit">Crear usuario</button>
+    </form>
+    <p class="muted">Un analista con JRT "Ailen Doorman" queda a cargo de ese JRT: cuando el transporte de Ailen
+       recibe un mail, el analista va en copia también. Y cuando ese analista pide un desbloqueo, el aviso le
+       llega a Ailen (y a los administradores), pero no a él mismo.</p>
+  </section>
+</section>
+
+<section id="tab-gcg" class="tab-panel" {{ '' if active_tab == 'gcg' else 'hidden' }}>
+  <section class="panel">
+    <h2>Integración con GCG</h2>
+    <p class="muted">Cada {{ gcg_intervalo_min }} minutos el sistema revisa los choferes vencidos de la última
+       corrida y le consulta a GCG si ya tienen todos sus documentos críticos vigentes. Si es así, genera
+       automáticamente una solicitud de desbloqueo ya auto-aprobada, pendiente de liberar.</p>
+
+    <p>
+      Estado de la API key:
+      {% if gcg_api_key_configurada %}
+        <span class="estado-chip estado-ejecutado">configurada</span>
+      {% else %}
+        <span class="estado-chip estado-rechazado">sin configurar</span>
+      {% endif %}
+    </p>
+    <form action="{{ url_for('admin_gcg_api_key') }}" method="post" class="inline-form">
+      <label>API key de GCG
+        <input type="password" name="gcg_api_key" placeholder="{{ '(sin cambios)' if gcg_api_key_configurada else 'API_...' }}" style="min-width: 320px;">
+      </label>
+      <button type="submit">Guardar</button>
+    </form>
+    <p class="muted">Se guarda cifrada en la base, no en texto plano. Si la dejás en blanco al guardar, no se
+       toca la que ya está cargada.</p>
+
+    {% if gcg_sin_mapear %}
+    <p class="flash flash-error">
+      Faltan mapear a su Nº GCG (pestaña Documentos): {{ gcg_sin_mapear|map(attribute='nombre')|join(', ') }}.
+      Mientras falte alguno, el chequeo automático no genera desbloqueos.
+    </p>
+    {% endif %}
+
+    <p>
+      Estado de bloqueos cargado:
+      {% if counts.estado_bloqueos %}
+        <span class="estado-chip estado-ejecutado">{{ counts.estado_bloqueos }} bloqueados</span>
+        {% if config.estado_bloqueos_actualizado_en %}<span class="muted small"> · cargado el {{ config.estado_bloqueos_actualizado_en|fecha(true) }}</span>{% endif %}
+      {% else %}
+        <span class="estado-chip estado-rechazado">sin cargar</span>
+      {% endif %}
+      — se sube en la pestaña <a href="{{ url_for('admin', tab='datos') }}">Datos de referencia</a>.
+      Mientras no haya uno cargado, el chequeo automático no consulta a nadie.
+    </p>
+
+    <form action="{{ url_for('admin_gcg_chequear_ahora') }}" method="post" class="inline-form-tight">
+      <button type="submit" class="btn-ok">Chequear ahora</button>
+    </form>
+    <button type="button" id="gcg-notif-btn" class="btn-muted">🔔 Avisarme con notificación del navegador</button>
+    <p class="muted small">
+      Esta pestaña se actualiza sola cuando termina un chequeo (automático, manual o disparado por una corrida
+      nueva) — no hace falta recargar. Si activás la notificación, también te avisa aunque tengas otra pestaña
+      abierta.
+    </p>
+
+    <h2 style="margin-top: 24px;">Últimos chequeos</h2>
+    <div id="gcg-eventos-wrap">
+      {% if gcg_eventos %}
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Fecha</th><th>Detalle</th></tr></thead>
+        <tbody id="gcg-eventos-tbody">
+          {% for e in gcg_eventos %}
+          <tr>
+            <td class="small">{{ e.fecha|fecha(true) }}</td>
+            <td>{{ e.mensaje }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+        <p class="muted" id="gcg-eventos-vacio">Todavía no corrió ningún chequeo.</p>
+      {% endif %}
+    </div>
+  </section>
+</section>
+
+<section id="tab-log" class="tab-panel" {{ '' if active_tab == 'log' else 'hidden' }}>
+  <section class="panel">
+    <div class="panel-header-row">
+      <h2>Actividad</h2>
+      <form method="get" class="inline-form-tight">
+        <input type="hidden" name="tab" value="log">
+        <select name="tipo_log" onchange="this.form.submit()">
+          <option value="" {% if not filtro_tipo %}selected{% endif %}>Todos los tipos</option>
+          {% for t in tipos_log %}
+            <option value="{{ t }}" {% if t == filtro_tipo %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </form>
+    </div>
+    <p class="muted">Últimos {{ eventos|length }} eventos: altas y bajas de usuarios, corridas procesadas,
+       mails enviados, solicitudes de desbloqueo, cambios de configuración y documentos, e inicios de sesión.</p>
+    {% if eventos %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Fecha</th><th>Usuario</th><th>Tipo</th><th>Detalle</th></tr></thead>
+      <tbody>
+        {% for e in eventos %}
+        <tr>
+          <td class="small">{{ e.fecha|fecha(true) }}</td>
+          <td>{{ e.usuario_nombre or '—' }}</td>
+          <td><span class="tag">{{ e.tipo }}</span></td>
+          <td>{{ e.mensaje }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+      <p class="muted">Todavía no hay actividad registrada{% if filtro_tipo %} para "{{ filtro_tipo }}"{% endif %}.</p>
+    {% endif %}
+  </section>
+</section>
+
+<script>
+document.querySelectorAll('.tab-btn').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
+    document.querySelectorAll('.tab-panel').forEach(function (p) { p.hidden = true; });
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).hidden = false;
+  });
+});
+
+(function () {
+  var notifBtn = document.getElementById('gcg-notif-btn');
+  if (!notifBtn) return;
+
+  if (window.Notification && Notification.permission === 'granted') {
+    notifBtn.textContent = '🔔 Notificaciones activadas';
+  }
+  notifBtn.addEventListener('click', function () {
+    if (!window.Notification) {
+      alert('Tu navegador no soporta notificaciones.');
+      return;
+    }
+    Notification.requestPermission().then(function (perm) {
+      notifBtn.textContent = perm === 'granted' ? '🔔 Notificaciones activadas' : '🔔 Avisarme con notificación del navegador';
+    });
+  });
+
+  function escapeHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function mostrarToast(mensaje) {
+    var toast = document.createElement('div');
+    toast.className = 'flash flash-ok';
+    toast.style.position = 'fixed';
+    toast.style.bottom = '16px';
+    toast.style.right = '16px';
+    toast.style.maxWidth = '420px';
+    toast.style.zIndex = '999';
+    toast.textContent = 'Chequeo de GCG: ' + mensaje;
+    document.body.appendChild(toast);
+    setTimeout(function () { toast.remove(); }, 12000);
+  }
+
+  var lastId = {{ (gcg_eventos[0].id if gcg_eventos else 0) }};
+  var eventosUrl = "{{ url_for('admin_gcg_eventos_json') }}";
+
+  function refrescarEventos() {
+    fetch(eventosUrl).then(function (r) { return r.json(); }).then(function (data) {
+      var eventos = data.eventos || [];
+      if (!eventos.length) return;
+      if (eventos[0].id === lastId) return;
+
+      var huboUno = lastId !== 0;
+      lastId = eventos[0].id;
+
+      var wrap = document.getElementById('gcg-eventos-wrap');
+      var filas = eventos.map(function (e) {
+        return '<tr><td class="small">' + escapeHtml(e.fecha) + '</td><td>' + escapeHtml(e.mensaje) + '</td></tr>';
+      }).join('');
+      wrap.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Detalle</th></tr></thead>' +
+        '<tbody id="gcg-eventos-tbody">' + filas + '</tbody></table></div>';
+
+      if (huboUno) {
+        mostrarToast(eventos[0].mensaje);
+        if (window.Notification && Notification.permission === 'granted') {
+          new Notification('Chequeo de GCG terminado', {body: eventos[0].mensaje});
+        }
+      }
+    }).catch(function () {});
+  }
+
+  setInterval(refrescarEventos, 5000);
+})();
+</script>
+{% endblock %}

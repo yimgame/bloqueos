@@ -1,0 +1,17 @@
+# Entorno / caché de Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Datos reales (choferes, proveedores, DNI) y secretos: nunca al repo
+*.db
+*.xlsx
+*.xls
+.env
+gcg/.env
+gcg/*.pdf
+
+# Carpeta de trabajo para archivos que no van al repo
+ignore/
+Nueva carpeta/

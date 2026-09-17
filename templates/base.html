@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Bloqueo de choferes{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="{{ url_for('dashboard') }}">Bloqueo de choferes · doc. crítica</a>
+    <nav>
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('historial') }}">Historial</a>
+      <a href="{{ url_for('solicitudes') }}">Solicitudes</a>
+      <a href="{{ url_for('gcg_consultar') }}">Buscar en GCG</a>
+      {% if current_user and current_user.rol == 'admin' %}
+        <a href="{{ url_for('admin') }}">Configuración</a>
+      {% endif %}
+      {% if current_user %}
+        <span class="nav-user">{{ current_user.nombre_completo or current_user.username }}</span>
+        <a href="{{ url_for('logout') }}">Salir</a>
+      {% endif %}
+    </nav>
+  </div>
+</header>
+<main class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+<script src="{{ url_for('static', filename='table-enhance.js') }}" defer></script>
+</body>
+</html>

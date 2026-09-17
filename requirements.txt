@@ -1,0 +1,6 @@
+Flask
+pandas
+openpyxl
+requests
+cryptography
+pip-system-certs
