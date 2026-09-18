@@ -23,7 +23,7 @@
 {% if trabajador %}
 <section class="panel">
   <div class="panel-header-row">
-    <h2>{{ trabajador.nombre }} <span class="muted small">DNI {{ trabajador.dni }}</span></h2>
+    <h2>{{ trabajador.nombre }} <span class="muted small">DNI <button type="button" class="dni-copy" data-copy="{{ trabajador.dni }}" title="Copiar DNI">{{ trabajador.dni }}</button></span></h2>
     {% if todos_verdes %}
       <span class="estado-chip estado-ejecutado">se puede liberar</span>
     {% else %}
@@ -74,9 +74,9 @@
     <h2>Solicitar desbloqueo</h2>
   </div>
   {% if solicitud_activa %}
-    <p>Ya hay una solicitud activa para este chofer en la corrida actual:
+    <p>Ya hay una solicitud activa para este chofer:
        <span class="estado-chip estado-{{ solicitud_activa.estado }}">{{ solicitud_activa.estado }}</span>
-       (pedida por {{ solicitud_activa.solicitado_por_nombre }}). Revisala en
+       (pedida por {{ solicitud_activa.solicitado_por_nombre }} el {{ solicitud_activa.fecha_solicitud|fecha(true) }}). Revisala en
        <a href="{{ url_for('solicitudes') }}">Solicitudes</a>.</p>
   {% elif not run %}
     <p class="muted">Todavía no hay ninguna corrida procesada; subí un exportado de GCG desde el dashboard antes de pedir un desbloqueo.</p>

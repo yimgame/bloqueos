@@ -710,15 +710,36 @@ def crear_solicitud(row):
         return cur.lastrowid
 
 
-def solicitud_pendiente_existente(run_id, dni):
+def solicitud_pendiente_existente(dni):
+    """Una solicitud queda "abierta" para un DNI mientras no se ejecutó (liberó en
+    GCG) ni se rechazó, sin importar de qué corrida haya salido: el chofer se
+    puede bloquear y liberar en cualquier momento, no atado a una corrida
+    puntual. Lo que no puede pasar es tener dos solicitudes abiertas juntas."""
     with get_conn() as conn:
         row = conn.execute(
             """SELECT * FROM solicitudes_desbloqueo
-               WHERE run_id = ? AND dni = ? AND estado != 'rechazado'
+               WHERE dni = ? AND estado IN ('solicitado', 'autorizado')
                ORDER BY id DESC LIMIT 1""",
-            (run_id, dni),
+            (dni,),
         ).fetchone()
         return dict(row) if row else None
+
+
+def solicitud_ejecutada_sin_refrescar(dni, desde):
+    """True si a este DNI ya se le ejecutó (liberó) una solicitud en un momento
+    igual o posterior a `desde` (la fecha de carga del estado de bloqueos actual
+    vigente). Mientras no se suba un estado de bloqueos más nuevo que esa
+    ejecución, la foto real puede seguir mostrando al chofer como bloqueado por
+    inercia, y el chequeo automático no debe generarle otra solicitud de más
+    hasta que esa foto se actualice."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT 1 FROM solicitudes_desbloqueo
+               WHERE dni = ? AND estado = 'ejecutado' AND fecha_ejecucion >= ?
+               LIMIT 1""",
+            (dni, desde),
+        ).fetchone()
+        return row is not None
 
 
 def list_solicitudes():

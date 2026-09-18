@@ -128,9 +128,15 @@ def _ejecutar_chequeo_gcg():
     resultado = pipeline.clasificar_run(run["id"], dias_alerta=0)
     revisados = ya_liberados = generados = errores = 0
     actor = "Sistema (chequeo automático GCG)"
+    estado_bloqueos_en = db.get_config().get("estado_bloqueos_actualizado_en") or ""
 
     for c in resultado["vencidos"]:
-        if db.solicitud_pendiente_existente(run["id"], c["dni"]):
+        if db.solicitud_pendiente_existente(c["dni"]):
+            continue
+        # Si ya se le ejecutó una liberación y todavía no se subió un estado de
+        # bloqueos más nuevo que esa ejecución, la foto real puede seguir
+        # arrastrándolo como bloqueado por inercia: no generarle otra de más.
+        if estado_bloqueos_en and db.solicitud_ejecutada_sin_refrescar(c["dni"], estado_bloqueos_en):
             continue
         # Si no figura en la foto real de bloqueos, ya está liberado (por lo que
         # sea) y no hace falta gastar una consulta a la API ni generar nada.
@@ -191,7 +197,11 @@ def _bucle_chequeo_gcg():
 
 # Con el reloader de Flask (debug=True) el script se importa dos veces: una en el
 # proceso "vigía" y otra en el proceso que realmente sirve. WERKZEUG_RUN_MAIN sólo
-# está seteado en este último, así evitamos arrancar el hilo dos veces.
+# está seteado en este último, así evitamos arrancar el hilo dos veces. Ojo: acá
+# abajo se evalúa "app.debug" antes de que app.run(debug=True) lo haya seteado, por
+# lo que hay que fijarlo explícitamente primero (si no, el proceso "vigía" también
+# arranca el hilo y quedan dos chequeos automáticos corriendo en paralelo).
+app.debug = True
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     threading.Thread(target=_bucle_chequeo_gcg, daemon=True).start()
 
@@ -464,7 +474,7 @@ def gcg_consultar():
             catalogo = db.get_catalogo_documentos()
             proveedor = pipeline.buscar_proveedor_por_dni(dni)
             run = db.get_last_run()
-            solicitud_activa = db.solicitud_pendiente_existente(run["id"], dni) if run else None
+            solicitud_activa = db.solicitud_pendiente_existente(dni)
 
             documentos_txt = "; ".join(
                 f"{d['nombre']}: {'OK' if d['estado'] else ('VENCIDO' if d['encontrado'] else 'no encontrado en GCG')}"
@@ -509,9 +519,13 @@ def solicitar_desbloqueo():
     jrt = request.form.get("jrt")
     razon_social = request.form.get("razon_social")
     documentos = request.form.get("documentos")
-    existente = db.solicitud_pendiente_existente(run_id, dni)
+    existente = db.solicitud_pendiente_existente(dni)
     if existente:
-        flash("Ya hay una solicitud de desbloqueo activa para ese chofer en esta corrida.", "error")
+        flash(
+            f"Ya hay una solicitud de desbloqueo activa para ese chofer: la pidió "
+            f"{existente['solicitado_por_nombre']} el {db.fmt_fecha(existente['fecha_solicitud'], con_hora=True)}.",
+            "error",
+        )
         return redirect(request.referrer or url_for("dashboard"))
     fecha_solicitud = db.now_iso()
 

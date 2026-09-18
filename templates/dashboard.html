@@ -104,7 +104,7 @@
           {% for c in resultado.vencidos %}
           <tr>
             <td>{{ c.nombre }}</td>
-            <td>{{ c.dni }}</td>
+            <td><button type="button" class="dni-copy" data-copy="{{ c.dni }}" title="Copiar DNI">{{ c.dni }}</button></td>
             <td>{{ c.jrt }}</td>
             <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>
             {% for doc_nombre in documentos_activos %}
@@ -179,7 +179,7 @@
           {% for c in resultado.proximos %}
           <tr>
             <td>{{ c.nombre }}</td>
-            <td>{{ c.dni }}</td>
+            <td><button type="button" class="dni-copy" data-copy="{{ c.dni }}" title="Copiar DNI">{{ c.dni }}</button></td>
             <td>{{ c.jrt }}</td>
             <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>
             {% for doc_nombre in documentos_activos %}

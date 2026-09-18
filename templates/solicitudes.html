@@ -37,7 +37,7 @@
       {% set tiene_gcg = (s.gcg_documentos is not none) or s.gcg_error %}
       <tr{% if tiene_gcg %} class="row-clickable" data-doc-target="gcg-doc-{{ s.id }}" data-dni="{{ s.dni }}" data-nombre="{{ s.nombre }}" title="Ver lo que se encontró en GCG al momento de esta solicitud"{% endif %}>
         <td>{{ s.nombre }}</td>
-        <td>{{ s.dni }}</td>
+        <td><button type="button" class="dni-copy" data-copy="{{ s.dni }}" title="Copiar DNI">{{ s.dni }}</button></td>
         <td>{{ s.jrt }}</td>
         <td>{{ s.razon_social or '—' }}</td>
         <td{% if tiene_gcg %} class="doc-cell-clickable"{% endif %}>
@@ -45,7 +45,7 @@
           {% if tiene_gcg %}<span class="tag ver-gcg-tag">Ver detalle GCG</span>{% endif %}
         </td>
         <td>{{ origen_chip(s.origen) }}</td>
-        <td><span class="estado-chip estado-{{ s.estado }}">{{ s.estado }}</span></td>
+        <td><span class="estado-chip estado-{{ s.estado }}"{% if s.comentario %} title="{{ s.comentario }}"{% endif %}>{{ s.estado }}</span></td>
         <td>{{ s.solicitado_por_nombre }}<div class="muted small">{{ s.fecha_solicitud|fecha(true) if s.fecha_solicitud else '' }}</div></td>
         <td>
           {% if s.autorizado_por_nombre %}
@@ -62,12 +62,19 @@
             <form action="{{ url_for('solicitud_autorizar', solicitud_id=s.id) }}" method="post" class="inline-form-tight">
               <button type="submit" class="btn-ok">Autorizar</button>
             </form>
-            <form action="{{ url_for('solicitud_rechazar', solicitud_id=s.id) }}" method="post" class="inline-form-tight">
+            <form action="{{ url_for('solicitud_rechazar', solicitud_id=s.id) }}" method="post" class="inline-form-tight" onsubmit="var m = prompt('Motivo del rechazo (opcional):'); if (m === null) return false; this.comentario.value = m; return true;">
+              <input type="hidden" name="comentario">
               <button type="submit" class="btn-danger">Rechazar</button>
             </form>
-          {% elif s.estado == 'autorizado' and current_user.rol == 'admin' %}
+          {% elif s.estado == 'autorizado' %}
+            {% if current_user.rol == 'admin' %}
             <form action="{{ url_for('solicitud_ejecutar', solicitud_id=s.id) }}" method="post" class="inline-form-tight">
               <button type="submit">Marcar ejecutado</button>
+            </form>
+            {% endif %}
+            <form action="{{ url_for('solicitud_rechazar', solicitud_id=s.id) }}" method="post" class="inline-form-tight" onsubmit="var m = prompt('¿Rechazar esta solicitud ya autorizada? Motivo (opcional):'); if (m === null) return false; this.comentario.value = m; return true;">
+              <input type="hidden" name="comentario">
+              <button type="submit" class="btn-danger">Rechazar</button>
             </form>
           {% endif %}
         </td>

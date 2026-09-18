@@ -141,6 +141,30 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: upp
 }
 .doc-chip-amber { background: var(--amber-bg); color: var(--amber); }
 
+.dni-copy {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+}
+.dni-copy:hover, .dni-copy:focus-visible { border-bottom-color: var(--muted); }
+.dni-copy:hover::after, .dni-copy:focus-visible::after {
+  content: "⧉";
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.dni-copy.copiado::after {
+  content: "✓ copiado" !important;
+  margin-left: 6px;
+  font-size: 11px;
+  color: #1e7d32;
+}
+
 .tag {
   background: #eef0f2;
   color: var(--muted);
