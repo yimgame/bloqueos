@@ -13,6 +13,8 @@ import pandas as pd
 import db
 import gcg_api
 
+SIN_JRT_LABEL = "Sin JRT / sin proveedor"
+
 
 def _norm(s):
     if s is None:
@@ -326,13 +328,16 @@ def procesar_gcg_export(file_like, archivo_origen):
 def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion="asc"):
     hoy = datetime.now().date()
     rows = db.get_choferes_docs(run_id)
+    estado_bloqueos_map = db.get_estado_bloqueos_map()
+    estado_bloqueos_en = db.get_config().get("estado_bloqueos_actualizado_en") or None
 
     por_chofer = {}
     for r in rows:
-        jrt_label = (r["jrt"] or "").strip() or "Sin JRT / sin proveedor"
-        if jrt_filtro and jrt_label != jrt_filtro:
+        jrt_label = (r["jrt"] or "").strip() or SIN_JRT_LABEL
+        if jrt_filtro is not None and jrt_label not in jrt_filtro:
             continue
         key = r["dni"]
+        jd_info = estado_bloqueos_map.get(key)
         c = por_chofer.setdefault(key, {
             "dni": r["dni"],
             "nombre": r["nombre"],
@@ -345,6 +350,9 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
             "docs_proximos": [],
             "docs_todos": [],
             "sin_proveedor": r["nro_proveedor"] is None,
+            "jd_bloqueado": jd_info is not None,
+            "jd_tipo": (jd_info or {}).get("tipo"),
+            "jd_descripcion": (jd_info or {}).get("descripcion"),
         })
         fecha_str = r["fecha_vencimiento"]
         if not fecha_str:
@@ -389,6 +397,8 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
         "dias_alerta": dias_alerta,
         "resumen_jrt_vencidos": _resumen_por_jrt(vencidos),
         "resumen_jrt_proximos": _resumen_por_jrt(proximos),
+        "estado_bloqueos_en": estado_bloqueos_en,
+        "estado_bloqueos_cargado": bool(estado_bloqueos_en),
     }
 
 
@@ -420,7 +430,7 @@ def _resumen_por_jrt(lista):
 
 def jrt_list_for_run(run_id):
     rows = db.get_choferes_docs(run_id)
-    jrts = sorted({(r["jrt"] or "Sin JRT / sin proveedor") for r in rows})
+    jrts = sorted({(r["jrt"] or SIN_JRT_LABEL) for r in rows})
     return jrts
 
 
@@ -482,7 +492,15 @@ _FILL_POR_ESTADO = {
 }
 
 
-def _filas_por_documento(choferes, documentos_activos):
+def _motivo_jd(c):
+    partes = [
+        str(p).strip() for p in (c.get("jd_tipo"), c.get("jd_descripcion"))
+        if p not in (None, "") and str(p).strip()
+    ]
+    return " — ".join(partes)
+
+
+def _filas_por_documento(choferes, documentos_activos, incluir_jd=False, jd_cargado=True):
     """Arma filas con una columna por documento (fecha o 'sin dato') a partir de
     docs_todos, y en paralelo la lista de estados de esas columnas para pintarlas."""
     filas = []
@@ -496,6 +514,13 @@ def _filas_por_documento(choferes, documentos_activos):
             "N° Proveedor": c["nro_proveedor"],
             "Proveedor": c["razon_social"],
         }
+        if incluir_jd:
+            if not jd_cargado:
+                fila["Situación JD"] = "Sin datos"
+                fila["Motivo JD"] = ""
+            else:
+                fila["Situación JD"] = "Bloqueado" if c.get("jd_bloqueado") else "No bloqueado"
+                fila["Motivo JD"] = _motivo_jd(c) if c.get("jd_bloqueado") else ""
         fila_estados = []
         for doc_nombre in documentos_activos:
             d = docs_por_nombre.get(doc_nombre)
@@ -523,10 +548,11 @@ def exportar_excel(lista):
     """Cada documento controlado tiene su propia columna con la fecha (o 'sin dato'),
     igual que en el dashboard. Devuelve un .xlsx."""
     documentos_activos = [d["nombre"] for d in db.get_documentos_control(solo_activos=True)]
-    columnas_base = ["Chofer", "DNI", "JRT", "N° Proveedor", "Proveedor"]
+    jd_cargado = bool(db.get_config().get("estado_bloqueos_actualizado_en"))
+    columnas_base = ["Chofer", "DNI", "JRT", "N° Proveedor", "Proveedor", "Situación JD", "Motivo JD"]
     columnas = columnas_base + documentos_activos
 
-    filas, estados = _filas_por_documento(lista, documentos_activos)
+    filas, estados = _filas_por_documento(lista, documentos_activos, incluir_jd=True, jd_cargado=jd_cargado)
     df = pd.DataFrame(filas, columns=columnas)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:

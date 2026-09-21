@@ -491,6 +491,13 @@ def esta_bloqueado_actual(dni):
         return row is not None
 
 
+def get_estado_bloqueos_map():
+    """dni -> {tipo, descripcion} con la foto real de bloqueos vigente."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT dni, tipo, descripcion FROM estado_bloqueos").fetchall()
+        return {r["dni"]: {"tipo": r["tipo"], "descripcion": r["descripcion"]} for r in rows}
+
+
 def count_estado_bloqueos():
     with get_conn() as conn:
         return conn.execute("SELECT COUNT(*) c FROM estado_bloqueos").fetchone()["c"]

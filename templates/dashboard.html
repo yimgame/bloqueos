@@ -11,6 +11,18 @@
   {% endif %}
 {% endmacro %}
 
+{% macro jd_cell(c, cargado) %}
+  {% if not cargado %}
+    <span class="muted small">sin datos</span>
+  {% elif c.jd_bloqueado %}
+    <span class="estado-chip estado-ejecutado">Bloqueado</span>
+    {% set motivo = [c.jd_tipo, c.jd_descripcion] | select | join(' — ') %}
+    {% if motivo %}<div class="muted small">{{ motivo }}</div>{% endif %}
+  {% else %}
+    <span class="estado-chip estado-rechazado">No bloqueado</span>
+  {% endif %}
+{% endmacro %}
+
 {% block content %}
 
 {% if not run %}
@@ -38,13 +50,25 @@
   <section class="panel filters">
     <form method="get" class="inline-form">
       <input type="hidden" name="run_id" value="{{ run.id }}">
+      <input type="hidden" name="jrt_submitted" value="1">
       <label>JRT
-        <select name="jrt">
-          <option value="" {% if not jrt_filtro %}selected{% endif %}>Todos</option>
-          {% for j in jrts %}
-            <option value="{{ j }}" {% if j == jrt_filtro %}selected{% endif %}>{{ j }}</option>
-          {% endfor %}
-        </select>
+        <div class="multiselect" id="jrt-multiselect">
+          <button type="button" class="multiselect-toggle" id="jrt-multiselect-toggle">
+            <span id="jrt-multiselect-label">Todos</span> <span class="ms-caret">▾</span>
+          </button>
+          <div class="multiselect-panel" id="jrt-multiselect-panel" hidden>
+            <div class="multiselect-actions">
+              <button type="button" id="jrt-select-all">Todos</button>
+              <button type="button" id="jrt-select-none">Ninguno</button>
+            </div>
+            {% for j in jrts %}
+            <label class="multiselect-option">
+              <input type="checkbox" name="jrt" value="{{ j }}" {% if j in jrt_filtro %}checked{% endif %}>
+              {{ j }}
+            </label>
+            {% endfor %}
+          </div>
+        </div>
       </label>
       <button type="submit">Aplicar</button>
     </form>
@@ -66,7 +90,7 @@
 
     <section class="panel resumen-jrt-panel">
       <h2>Resumen por JRT — bloquear</h2>
-      <p class="muted">Corte al {{ resultado.hoy|fecha }}. Ordenado de mayor a menor por defecto — hacé clic en un encabezado para cambiar el orden.</p>
+      <p class="muted">Corte al {{ resultado.hoy|fecha }}.</p>
       <table class="resumen-table enhanced-table">
         <thead><tr><th>JRT</th><th>Bloquear</th></tr></thead>
         <tbody>
@@ -81,10 +105,13 @@
     <section class="panel">
       <div class="panel-header-row">
         <h2>Vencidos <span class="badge badge-red">{{ resultado.vencidos|length }}</span></h2>
-        <a class="btn-link" href="{{ url_for('exportar', tipo='vencidos', run_id=run.id, dias=dias_alerta, jrt=jrt_filtro, sort=orden, dir=direccion) }}">Exportar a Excel</a>
+        <a class="btn-link" href="{{ url_for('exportar', tipo='vencidos', run_id=run.id, dias=dias_alerta, jrt=jrt_filtro, jrt_submitted=1, sort=orden, dir=direccion) }}">Exportar a Excel</a>
       </div>
       <p class="muted">Tienen al menos un documento crítico vencido a hoy ({{ resultado.hoy|fecha }}). Corresponde bloquear.
          Se muestran todos los documentos auditados con su fecha tal cual el exportado.</p>
+      <p class="muted">La columna "Situación JD" refleja el estado de bloqueos cargado en
+         <a href="{{ url_for('admin', tab='datos') }}">Configuración → Datos de referencia</a>{% if resultado.estado_bloqueos_en %},
+         actualizado el {{ resultado.estado_bloqueos_en|fecha(true) }}{% endif %}.</p>
       {% if resultado.vencidos %}
       <div class="table-wrap">
       <table class="enhanced-table filterable">
@@ -94,6 +121,7 @@
             <th>DNI</th>
             <th>JRT</th>
             <th>Proveedor</th>
+            <th>Situación JD</th>
             {% for doc_nombre in documentos_activos %}
             <th>{{ doc_nombre }}</th>
             {% endfor %}
@@ -107,6 +135,7 @@
             <td><button type="button" class="dni-copy" data-copy="{{ c.dni }}" title="Copiar DNI">{{ c.dni }}</button></td>
             <td>{{ c.jrt }}</td>
             <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>
+            <td>{{ jd_cell(c, resultado.estado_bloqueos_cargado) }}</td>
             {% for doc_nombre in documentos_activos %}
             <td>{{ doc_cell(c.docs_todos, doc_nombre) }}</td>
             {% endfor %}
@@ -143,7 +172,7 @@
 
     <section class="panel resumen-jrt-panel">
       <h2>Resumen por JRT — próximos a vencer</h2>
-      <p class="muted">Vencen dentro de los próximos {{ resultado.dias_alerta }} días. Ordenado de mayor a menor por defecto — hacé clic en un encabezado para cambiar el orden.</p>
+      <p class="muted">Vencen dentro de los próximos {{ resultado.dias_alerta }} días.</p>
       <table class="resumen-table enhanced-table">
         <thead><tr><th>JRT</th><th>Próximos</th></tr></thead>
         <tbody>
@@ -158,9 +187,12 @@
     <section class="panel">
       <div class="panel-header-row">
         <h2>Próximos a vencer <span class="badge badge-amber">{{ resultado.proximos|length }}</span></h2>
-        <a class="btn-link" href="{{ url_for('exportar', tipo='proximos', run_id=run.id, dias=dias_alerta, jrt=jrt_filtro, sort=orden, dir=direccion) }}">Exportar a Excel</a>
+        <a class="btn-link" href="{{ url_for('exportar', tipo='proximos', run_id=run.id, dias=dias_alerta, jrt=jrt_filtro, jrt_submitted=1, sort=orden, dir=direccion) }}">Exportar a Excel</a>
       </div>
       <p class="muted">Todavía no están vencidos. Se muestran todos los documentos auditados con su fecha tal cual el exportado.</p>
+      <p class="muted">La columna "Situación JD" refleja el estado de bloqueos cargado en
+         <a href="{{ url_for('admin', tab='datos') }}">Configuración → Datos de referencia</a>{% if resultado.estado_bloqueos_en %},
+         actualizado el {{ resultado.estado_bloqueos_en|fecha(true) }}{% endif %}.</p>
       {% if resultado.proximos %}
       <div class="table-wrap">
       <table class="enhanced-table filterable">
@@ -170,6 +202,7 @@
             <th>DNI</th>
             <th>JRT</th>
             <th>Proveedor</th>
+            <th>Situación JD</th>
             {% for doc_nombre in documentos_activos %}
             <th>{{ doc_nombre }}</th>
             {% endfor %}
@@ -182,6 +215,7 @@
             <td><button type="button" class="dni-copy" data-copy="{{ c.dni }}" title="Copiar DNI">{{ c.dni }}</button></td>
             <td>{{ c.jrt }}</td>
             <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>
+            <td>{{ jd_cell(c, resultado.estado_bloqueos_cargado) }}</td>
             {% for doc_nombre in documentos_activos %}
             <td>{{ doc_cell(c.docs_todos, doc_nombre) }}</td>
             {% endfor %}
@@ -208,7 +242,7 @@
          <a href="{{ url_for('admin_usuarios') }}">Usuarios</a>.</p>
       {% if transportes %}
       <div class="table-wrap">
-      <table class="enhanced-table filterable">
+      <table class="enhanced-table filterable resizable-cols" id="tabla-mails">
         <thead>
           <tr>
             <th>Proveedor</th>
@@ -269,6 +303,48 @@ document.querySelectorAll('.tab-btn').forEach(function (btn) {
     document.getElementById(btn.dataset.tab).hidden = false;
   });
 });
+
+(function () {
+  var wrap = document.getElementById('jrt-multiselect');
+  if (!wrap) return;
+  var toggle = document.getElementById('jrt-multiselect-toggle');
+  var panel = document.getElementById('jrt-multiselect-panel');
+  var labelEl = document.getElementById('jrt-multiselect-label');
+  var checkboxes = panel.querySelectorAll('input[type=checkbox]');
+
+  function actualizarEtiqueta() {
+    var total = checkboxes.length;
+    var marcados = panel.querySelectorAll('input[type=checkbox]:checked').length;
+    if (marcados === 0) {
+      labelEl.textContent = 'Ninguno';
+    } else if (marcados === total) {
+      labelEl.textContent = 'Todos (' + total + ')';
+    } else {
+      labelEl.textContent = marcados + ' de ' + total;
+    }
+  }
+  actualizarEtiqueta();
+  checkboxes.forEach(function (cb) { cb.addEventListener('change', actualizarEtiqueta); });
+
+  toggle.addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    panel.hidden = !panel.hidden;
+  });
+  document.addEventListener('click', function (ev) {
+    if (!wrap.contains(ev.target)) panel.hidden = true;
+  });
+
+  var btnTodos = document.getElementById('jrt-select-all');
+  var btnNinguno = document.getElementById('jrt-select-none');
+  btnTodos.addEventListener('click', function () {
+    checkboxes.forEach(function (cb) { cb.checked = true; });
+    actualizarEtiqueta();
+  });
+  btnNinguno.addEventListener('click', function () {
+    checkboxes.forEach(function (cb) { cb.checked = false; });
+    actualizarEtiqueta();
+  });
+})();
 
 document.querySelectorAll('.btn-enviar-mail').forEach(function (btn) {
   btn.addEventListener('click', function (ev) {

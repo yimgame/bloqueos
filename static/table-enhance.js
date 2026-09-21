@@ -111,7 +111,44 @@
     });
   }
 
+  function hacerRedimensionable(table) {
+    if (!table.classList.contains("resizable-cols")) return;
+    var thead = table.tHead;
+    if (!thead) return;
+    var headers = Array.prototype.slice.call(thead.rows[0].cells);
+
+    headers.forEach(function (th, idx) {
+      if (idx === headers.length - 1) return; // la última columna ocupa lo que sobra
+      var resizer = document.createElement("span");
+      resizer.className = "col-resizer";
+      resizer.addEventListener("click", function (ev) { ev.stopPropagation(); });
+      resizer.addEventListener("mousedown", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        var startX = ev.clientX;
+        var startWidth = th.getBoundingClientRect().width;
+        resizer.classList.add("resizing");
+
+        function onMove(ev2) {
+          var nuevo = Math.max(60, startWidth + (ev2.clientX - startX));
+          th.style.width = nuevo + "px";
+        }
+        function onUp() {
+          resizer.classList.remove("resizing");
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+        }
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+      th.appendChild(resizer);
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
-    document.querySelectorAll("table.enhanced-table").forEach(enhance);
+    document.querySelectorAll("table.enhanced-table").forEach(function (table) {
+      enhance(table);
+      hacerRedimensionable(table);
+    });
   });
 })();

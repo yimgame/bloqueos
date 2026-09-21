@@ -248,6 +248,18 @@ def _dias_alerta_default():
         return 7
 
 
+def _resolver_jrt_filtro(user, jrts):
+    """Lista de JRT a mostrar. Los roles jrt/analista quedan fijos a su propio
+    JRT. Para el resto: si se envió el filtro (form del dashboard, con
+    jrt_submitted), se respeta lo tildado; si no, por defecto van todos los
+    JRT activados salvo "Sin JRT / sin proveedor" (arranca sin tildar)."""
+    if "jrt_submitted" in request.args:
+        return request.args.getlist("jrt")
+    if user["rol"] in ("jrt", "analista"):
+        return [user["jrt"]] if user["jrt"] else []
+    return [j for j in jrts if j != pipeline.SIN_JRT_LABEL]
+
+
 def _cc_para_transporte(transporte, cfg, excluir=()):
     """CC de un mail a transporte: el JRT del transporte, los analistas a su cargo,
     los administradores (siempre en copia de todo) y la lista manual de Configuración."""
@@ -270,19 +282,16 @@ def dashboard():
     orden = request.args.get("sort") or None
     direccion = request.args.get("dir", default="asc")
 
-    if "jrt" in request.args:
-        jrt_filtro = request.args.get("jrt") or None
-    else:
-        jrt_filtro = user["jrt"] if user["rol"] in ("jrt", "analista") else None
-
     run = db.get_run(run_id) if run_id else db.get_last_run()
     if not run:
         return render_template("dashboard.html", run=None)
 
+    jrts = pipeline.jrt_list_for_run(run["id"])
+    jrt_filtro = _resolver_jrt_filtro(user, jrts)
+
     resultado = pipeline.clasificar_run(
         run["id"], dias_alerta=dias_alerta, jrt_filtro=jrt_filtro, orden=orden, direccion=direccion
     )
-    jrts = pipeline.jrt_list_for_run(run["id"])
     solicitudes_por_dni = {
         s["dni"]: s for s in db.list_solicitudes() if s["run_id"] == run["id"]
     }
@@ -318,14 +327,13 @@ def exportar(tipo):
     dias_alerta = request.args.get("dias", default=_dias_alerta_default(), type=int)
     orden = request.args.get("sort") or None
     direccion = request.args.get("dir", default="asc")
-    if "jrt" in request.args:
-        jrt_filtro = request.args.get("jrt") or None
-    else:
-        jrt_filtro = user["jrt"] if user["rol"] in ("jrt", "analista") else None
 
     run = db.get_run(run_id) if run_id else db.get_last_run()
     if not run:
         return redirect(url_for("dashboard"))
+
+    jrts = pipeline.jrt_list_for_run(run["id"])
+    jrt_filtro = _resolver_jrt_filtro(user, jrts)
 
     resultado = pipeline.clasificar_run(
         run["id"], dias_alerta=dias_alerta, jrt_filtro=jrt_filtro, orden=orden, direccion=direccion
