@@ -126,7 +126,7 @@ def _ejecutar_chequeo_gcg():
         return
 
     resultado = pipeline.clasificar_run(run["id"], dias_alerta=0)
-    revisados = ya_liberados = generados = errores = 0
+    revisados = ya_liberados = generados = errores = rechazados_recientes = 0
     actor = "Sistema (chequeo automático GCG)"
     estado_bloqueos_en = db.get_config().get("estado_bloqueos_actualizado_en") or ""
 
@@ -137,6 +137,12 @@ def _ejecutar_chequeo_gcg():
         # bloqueos más nuevo que esa ejecución, la foto real puede seguir
         # arrastrándolo como bloqueado por inercia: no generarle otra de más.
         if estado_bloqueos_en and db.solicitud_ejecutada_sin_refrescar(c["dni"], estado_bloqueos_en):
+            continue
+        # Si a este chofer ya le rechazaron una solicitud (alguien vio un motivo
+        # que GCG no ve, ej. una sanción) no se le vuelve a generar otra hasta
+        # que se cargue un estado de bloqueos más nuevo que ese rechazo.
+        if estado_bloqueos_en and db.solicitud_rechazada_sin_refrescar(c["dni"], estado_bloqueos_en):
+            rechazados_recientes += 1
             continue
         # Si no figura en la foto real de bloqueos, ya está liberado (por lo que
         # sea) y no hace falta gastar una consulta a la API ni generar nada.
@@ -182,6 +188,7 @@ def _ejecutar_chequeo_gcg():
         "gcg_auto",
         f"Chequeo automático GCG: {revisados} chofer(es) consultado(s) a la API, "
         f"{ya_liberados} ya no figuraban bloqueados en la foto real (se saltearon), "
+        f"{rechazados_recientes} con un rechazo previo sin refrescar (se saltearon), "
         f"{generados} desbloqueo(s) generado(s), {errores} con error de consulta.",
     )
 

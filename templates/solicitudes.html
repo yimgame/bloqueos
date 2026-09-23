@@ -45,7 +45,10 @@
           {% if tiene_gcg %}<span class="tag ver-gcg-tag">Ver detalle GCG</span>{% endif %}
         </td>
         <td>{{ origen_chip(s.origen) }}</td>
-        <td><span class="estado-chip estado-{{ s.estado }}"{% if s.comentario %} title="{{ s.comentario }}"{% endif %}>{{ s.estado }}</span></td>
+        <td>
+          <span class="estado-chip estado-{{ s.estado }}">{{ s.estado }}</span>
+          {% if s.comentario %}<div class="muted small">{{ s.comentario }}</div>{% endif %}
+        </td>
         <td>{{ s.solicitado_por_nombre }}<div class="muted small">{{ s.fecha_solicitud|fecha(true) if s.fecha_solicitud else '' }}</div></td>
         <td>
           {% if s.autorizado_por_nombre %}

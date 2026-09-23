@@ -732,6 +732,23 @@ def solicitud_pendiente_existente(dni):
         return dict(row) if row else None
 
 
+def solicitud_rechazada_sin_refrescar(dni, desde):
+    """True si a este DNI ya se le rechazó una solicitud en un momento igual o
+    posterior a `desde` (la fecha de carga del estado de bloqueos actual
+    vigente). Si alguien la rechazó a mano fue por algo que la foto de GCG no
+    ve (ej. un chofer sancionado con los documentos viejos todavía vigentes):
+    el chequeo automático no debe volver a generarle otra hasta que se suba un
+    estado de bloqueos más nuevo que ese rechazo."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT 1 FROM solicitudes_desbloqueo
+               WHERE dni = ? AND estado = 'rechazado' AND fecha_autorizacion >= ?
+               LIMIT 1""",
+            (dni, desde),
+        ).fetchone()
+        return row is not None
+
+
 def solicitud_ejecutada_sin_refrescar(dni, desde):
     """True si a este DNI ya se le ejecutó (liberó) una solicitud en un momento
     igual o posterior a `desde` (la fecha de carga del estado de bloqueos actual
