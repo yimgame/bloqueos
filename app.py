@@ -8,11 +8,13 @@ Uso:
 import json
 import os
 import re
+import socket
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, session, send_file, has_request_context
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 import auth
 import db
@@ -23,50 +25,245 @@ import pipeline
 app = Flask(__name__)
 app.secret_key = "bloqueo-choferes-doc-critica"
 app.jinja_env.filters["fecha"] = db.fmt_fecha
+PUERTO = 5000
 
 db.init_db()
 
 CHEQUEO_GCG_INTERVALO_SEG = 30 * 60
 
+# Barrido mensual de transportes: una vez por mes se consulta en la API de GCG a
+# todos los choferes vistos en el último año para registrar en qué contratista
+# figuran. Arranca a partir de esta hora (para no cargar la API en horario de
+# oficina) y se revisa cada hora si ya corrió este mes.
+MAPEO_HORA_DESDE = 21
+MAPEO_REVISION_SEG = 60 * 60
+MAPEO_DIAS_VISTOS = 365
 
-def _notificar_solicitud(nombre, dni, jrt, razon_social, documentos, fecha_solicitud,
-                          autor_user=None, ya_autorizada=False):
-    """Avisa por mail a los administradores y al JRT correspondiente de una
-    solicitud de desbloqueo (nueva o recién auto-aprobada). El que la generó no
-    va en copia: si fue un humano, ya le queda su registro en el sistema; si fue
-    el chequeo automático de GCG, no hay a quién excluir."""
+
+# ---------------------------------------------------------------------------
+# Mails de solicitudes de desbloqueo (con botones Aceptar / Rechazar)
+# ---------------------------------------------------------------------------
+
+# Los botones del mail llevan un token firmado con la secret_key que identifica
+# solicitud + usuario + acción: quien lo clickea no necesita loguearse. El link
+# abre una página de confirmación (no resuelve con el GET), porque Outlook y el
+# antivirus abren los links de los mails solos para escanearlos.
+TOKEN_MAIL_DIAS = 7
+_token_serializer = URLSafeTimedSerializer(app.secret_key, salt="accion-solicitud-mail")
+
+# Última URL base (http://host:puerto/) con la que alguien entró a la app, para
+# armar los links de los mails cuando no hay una "URL de la app" configurada.
+_url_base_vista = None
+
+
+def _ip_local():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))  # UDP: no manda nada, sólo elige la interfaz de red
+            return sock.getsockname()[0]
+    except OSError:
+        return socket.gethostbyname(socket.gethostname())
+
+
+def url_base_app():
+    """URL con la que se arman los links de los mails: la configurada en
+    Configuración → General; si no hay, la última con la que se entró a la app
+    (que no sea localhost); si tampoco, la IP de esta máquina."""
+    configurada = (db.get_config().get("app_url") or "").strip()
+    if configurada:
+        return configurada.rstrip("/") + "/"
+    if _url_base_vista:
+        return _url_base_vista
+    return f"http://{_ip_local()}:{PUERTO}/"
+
+
+def _situacion_documental(s):
+    """Lo que se vio en GCG al generar la solicitud: filas {nombre, fecha, estado,
+    critico} con los críticos primero, o None si no hubo consulta."""
+    if not s.get("gcg_json"):
+        return None
+    try:
+        data = json.loads(s["gcg_json"])
+    except (ValueError, TypeError):
+        return None
+    criticos = {
+        d["gcg_doc_numero"]
+        for d in gcg_api.documentos_aplicables(data, db.get_documentos_control(solo_activos=True))
+        if d.get("gcg_doc_numero")
+    }
+    filas = gcg_api.listar_todos_los_documentos(data, db.get_catalogo_documentos())
+    for f in filas:
+        f["critico"] = f["numero"] in criticos
+    filas.sort(key=lambda f: (not f["critico"], f["estado"], f["nombre"]))
+    return filas
+
+
+def _motivo_bloqueo_txt(bloqueo):
+    if not bloqueo:
+        return "No figura en la última foto de bloqueos cargada."
+    return " - ".join(p for p in (bloqueo.get("tipo"), bloqueo.get("descripcion")) if p) or "Bloqueado (sin detalle)"
+
+
+def _destinatarios_solicitud(s, excluir_mail=None):
+    """[(usuario, con_botones)] a quienes avisar de una solicitud: el JRT que la
+    tiene que autorizar (el titular o, si está de vacaciones, quien lo cubre, con
+    el titular en copia sin botones para que le quede el registro) y los
+    administradores (con botones sólo si está activado en Configuración)."""
+    pendiente = s["estado"] == "solicitado"
+    destinatarios = {}
+
+    titular = db.get_usuario_by_jrt(s["jrt"])
+    if titular:
+        reemplazo = db.get_reemplazo_vigente(titular)
+        if reemplazo:
+            destinatarios[reemplazo["id"]] = (reemplazo, pendiente)
+            destinatarios.setdefault(titular["id"], (titular, False))
+        else:
+            destinatarios[titular["id"]] = (titular, pendiente)
+
+    botones_admin = pendiente and db.get_config().get("mail_botones_admin") == "1"
+    for admin in db.get_admins():
+        destinatarios.setdefault(admin["id"], (admin, botones_admin))
+
+    resultado = []
+    for u, con_botones in destinatarios.values():
+        if not u.get("mail") or u["mail"] == excluir_mail:
+            continue
+        # Nadie autoriza su propia solicitud (salvo un admin).
+        if s.get("solicitado_por_id") == u["id"] and u["rol"] != "admin":
+            con_botones = False
+        resultado.append((u, con_botones))
+    return resultado
+
+
+def _notificar_solicitud(solicitud_id, autor_user=None):
+    """Avisa por mail de una solicitud de desbloqueo (nueva o recién
+    auto-aprobada). Si está pendiente, el JRT que corresponde la puede aceptar o
+    rechazar desde el mismo mail. El que la generó no va en copia."""
+    s = db.get_solicitud(solicitud_id)
+    if not s:
+        return
     excluir_mail = autor_user.get("mail") if autor_user else None
-    destinatarios = set(db.get_mails_admin(excluir_mail=excluir_mail))
-    jrt_usuario = db.get_usuario_by_jrt(jrt)
-    if jrt_usuario and jrt_usuario.get("mail") and jrt_usuario["mail"] != excluir_mail:
-        destinatarios.add(jrt_usuario["mail"])
+    destinatarios = _destinatarios_solicitud(s, excluir_mail=excluir_mail)
     if not destinatarios:
         return
 
-    quien = (autor_user["nombre_completo"] or autor_user["username"]) if autor_user else "El sistema (chequeo automático GCG)"
-    estado_txt = (
-        "Ya quedó autorizada: pendiente de liberar en GCG."
-        if ya_autorizada else
-        "Queda pendiente de autorización."
-    )
-    asunto = f"{'Desbloqueo pendiente de liberación' if ya_autorizada else 'Solicitud de desbloqueo'} - {nombre} (DNI {dni})"
-    cuerpo = (
-        f"{quien} generó el desbloqueo de:\n\n"
-        f"Chofer: {nombre}\n"
-        f"DNI: {dni}\n"
-        f"JRT: {jrt or '—'}\n"
-        f"Proveedor: {razon_social or '—'}\n"
-        f"Documentos: {documentos or '—'}\n"
-        f"Fecha: {db.fmt_fecha(fecha_solicitud, con_hora=True)}\n\n"
-        f"{estado_txt} Revisalo en la sección Solicitudes del sistema."
+    pendiente = s["estado"] == "solicitado"
+    asunto = f"{'Solicitud de desbloqueo' if pendiente else 'Desbloqueo pendiente de liberación'} - {s['nombre']} (DNI {s['dni']})"
+    base = url_base_app()
+    documentos_gcg = _situacion_documental(s)
+    bloqueo = db.get_estado_bloqueo(s["dni"])
+    plantilla = app.jinja_env.get_template("mail_solicitud.html")
+
+    enviados, errores = [], []
+    for usuario, con_botones in destinatarios:
+        url_aceptar = url_rechazar = None
+        if con_botones:
+            url_aceptar = base + "m/" + _token_serializer.dumps({"s": s["id"], "u": usuario["id"], "a": "autorizar"})
+            url_rechazar = base + "m/" + _token_serializer.dumps({"s": s["id"], "u": usuario["id"], "a": "rechazar"})
+        contexto = {
+            "s": s, "documentos_gcg": documentos_gcg, "bloqueo": bloqueo,
+            "motivo_bloqueo": _motivo_bloqueo_txt(bloqueo), "url_solicitudes": base + "solicitudes",
+            "destinatario": usuario, "url_aceptar": url_aceptar, "url_rechazar": url_rechazar,
+        }
+        try:
+            mailer.enviar_mail([usuario["mail"]], [], asunto, _texto_plano_solicitud(contexto),
+                               html=plantilla.render(**contexto))
+            enviados.append(usuario["mail"] + (" (con botones)" if con_botones else ""))
+        except Exception as e:
+            errores.append(f"{usuario['mail']}: {e}")
+
+    if enviados:
+        db.log_evento("mail", f"Aviso de desbloqueo ({s['nombre']}, DNI {s['dni']}) enviado a {', '.join(enviados)}", usuario=autor_user)
+    if errores:
+        db.log_evento("mail", f"Error enviando aviso de desbloqueo ({s['nombre']}, DNI {s['dni']}): {'; '.join(errores)}", usuario=autor_user)
+        if autor_user and has_request_context():
+            flash(f"No se pudo enviar el mail de aviso de la solicitud: {'; '.join(errores)}", "error")
+
+
+def _texto_plano_solicitud(c):
+    """Versión texto del mail de solicitud (para clientes que no muestran HTML)."""
+    s = c["s"]
+    lineas = [
+        f"{s['solicitado_por_nombre']} generó el desbloqueo de:",
+        "",
+        f"Chofer: {s['nombre']}",
+        f"DNI: {s['dni']}",
+        f"JRT: {s['jrt'] or '—'}",
+        f"Proveedor: {s['razon_social'] or '—'}",
+        f"Documentos vencidos: {s['documentos'] or '—'}",
+        f"Motivo del bloqueo: {c['motivo_bloqueo']}",
+        f"Fecha: {db.fmt_fecha(s['fecha_solicitud'], con_hora=True)}",
+        "",
+    ]
+    if c["documentos_gcg"]:
+        lineas.append("Situación en GCG al momento de la solicitud:")
+        for d in c["documentos_gcg"]:
+            lineas.append(f"  {'[CRÍTICO] ' if d['critico'] else ''}{d['nombre']}: "
+                          f"{'Vigente' if d['estado'] else 'VENCIDO'} (vto {d['fecha'] or '—'})")
+        lineas.append("")
+    if s["estado"] != "solicitado":
+        lineas.append("Ya quedó autorizada: pendiente de liberar en JDE.")
+    elif c["url_aceptar"]:
+        lineas += [f"Aceptar: {c['url_aceptar']}", f"Rechazar: {c['url_rechazar']}"]
+    else:
+        lineas.append("Queda pendiente de autorización.")
+    lineas.append(f"Ver solicitudes: {c['url_solicitudes']}")
+    return "\n".join(lineas)
+
+
+def _notificar_resolucion(solicitud_id, actor):
+    """Cuando alguien autoriza o rechaza una solicitud, avisa al que la pidió (el
+    analista), a los administradores (que la tienen que liberar en JDE) y al JRT
+    titular (por si la resolvió otro, ej. quien lo cubre en vacaciones). El que
+    la resolvió no va en copia."""
+    s = db.get_solicitud(solicitud_id)
+    if not s:
+        return
+    mails = set(db.get_mails_admin())
+    if s.get("solicitado_por_id"):
+        solicitante = db.get_usuario(s["solicitado_por_id"])
+        if solicitante and solicitante.get("mail"):
+            mails.add(solicitante["mail"])
+    titular = db.get_usuario_by_jrt(s["jrt"])
+    if titular and titular.get("mail"):
+        mails.add(titular["mail"])
+    mails.discard(actor.get("mail"))
+    if not mails:
+        return
+
+    aprobada = s["estado"] == "autorizado"
+    prio1 = aprobada and s["origen"] in db.ORIGENES_HUMANOS
+    asunto = (f"Solicitud {'APROBADA' if aprobada else 'RECHAZADA'}{' [PRIO 1]' if prio1 else ''}"
+              f" - {s['nombre']} (DNI {s['dni']})")
+    url_solicitudes = url_base_app() + "solicitudes"
+    texto = "\n".join([
+        f"La solicitud de desbloqueo fue {'APROBADA' if aprobada else 'RECHAZADA'}.",
+        "",
+        f"Chofer: {s['nombre']}",
+        f"DNI: {s['dni']}",
+        f"JRT: {s['jrt'] or '—'}",
+        f"Proveedor: {s['razon_social'] or '—'}",
+        f"Documentos: {s['documentos'] or '—'}",
+        f"Pedida por: {s['solicitado_por_nombre']} el {db.fmt_fecha(s['fecha_solicitud'], con_hora=True)}",
+        f"{'Aprobada' if aprobada else 'Rechazada'} por: {s['autorizado_por_nombre']} "
+        f"el {db.fmt_fecha(s['fecha_autorizacion'], con_hora=True)}",
+        f"{'Comentario' if aprobada else 'Motivo'}: {s['comentario'] or '—'}",
+        "",
+        "Pendiente de liberar en JDE." if aprobada else "No se libera.",
+        f"Ver solicitudes: {url_solicitudes}",
+    ])
+    html = app.jinja_env.get_template("mail_resolucion.html").render(
+        s=s, aprobada=aprobada, prio1=prio1, url_solicitudes=url_solicitudes,
     )
     try:
-        mailer.enviar_mail(sorted(destinatarios), [], asunto, cuerpo)
-        db.log_evento("mail", f"Aviso de desbloqueo ({nombre}, DNI {dni}) enviado a {', '.join(sorted(destinatarios))}", usuario=autor_user)
+        mailer.enviar_mail(sorted(mails), [], asunto, texto, html=html)
+        db.log_evento("mail", f"Aviso de solicitud {'aprobada' if aprobada else 'rechazada'} ({s['nombre']}, DNI {s['dni']}) "
+                              f"enviado a {', '.join(sorted(mails))}", usuario=actor)
     except Exception as e:
-        db.log_evento("mail", f"Error enviando aviso de desbloqueo ({nombre}, DNI {dni}): {e}", usuario=autor_user)
-        if autor_user:
-            flash(f"No se pudo enviar el mail de aviso de la solicitud: {e}", "error")
+        db.log_evento("mail", f"Error enviando aviso de resolución ({s['nombre']}, DNI {s['dni']}): {e}", usuario=actor)
+        if has_request_context():
+            flash(f"No se pudo enviar el mail de aviso de la resolución: {e}", "error")
 
 
 def _consultar_gcg_para_solicitud(dni):
@@ -75,16 +272,16 @@ def _consultar_gcg_para_solicitud(dni):
     (prueba de auditoría) y saber si con eso alcanza para auto-aprobar. Si la
     consulta falla no corta el flujo (puede pasar que GCG esté caído): la
     solicitud se genera igual, pero queda constancia del error en vez del JSON."""
-    documentos_activos = db.get_documentos_control(solo_activos=True)
+    try:
+        data = gcg_api.consultar_trabajador(dni)
+    except Exception as e:
+        return {"gcg_json": None, "gcg_consultado_en": db.now_iso(), "gcg_error": str(e), "todos_verdes": False}
+    documentos_activos = gcg_api.documentos_aplicables(data, db.get_documentos_control(solo_activos=True))
     numeros_criticos = [d["gcg_doc_numero"] for d in documentos_activos if d.get("gcg_doc_numero")]
     # Si falta mapear el Nº GCG de algún documento crítico activo, no se puede
     # confiar en el resultado (habría uno que ni se llegó a mirar): no se
     # auto-aprueba por "todos verdes" en ese caso.
     todos_mapeados = bool(documentos_activos) and len(numeros_criticos) == len(documentos_activos)
-    try:
-        data = gcg_api.consultar_trabajador(dni)
-    except Exception as e:
-        return {"gcg_json": None, "gcg_consultado_en": db.now_iso(), "gcg_error": str(e), "todos_verdes": False}
     todos_verdes = todos_mapeados and gcg_api.documentos_criticos_verdes(data, numeros_criticos)
     return {
         "gcg_json": json.dumps(data, ensure_ascii=False),
@@ -114,7 +311,6 @@ def _ejecutar_chequeo_gcg():
             f"(Configuración → Documentos): {', '.join(sin_mapear)}.",
         )
         return
-    numeros_criticos = [d["gcg_doc_numero"] for d in documentos_activos]
 
     if db.count_estado_bloqueos() == 0:
         db.log_evento(
@@ -157,6 +353,7 @@ def _ejecutar_chequeo_gcg():
             time.sleep(0.3)
             continue
 
+        numeros_criticos = [d["gcg_doc_numero"] for d in gcg_api.documentos_aplicables(data, documentos_activos)]
         if gcg_api.documentos_criticos_verdes(data, numeros_criticos):
             fecha = db.now_iso()
             documentos_txt = ", ".join(d["documento"] for d in c["docs_vencidos"])
@@ -180,7 +377,7 @@ def _ejecutar_chequeo_gcg():
                 comentario="Todos los documentos críticos figuran vigentes en la consulta a GCG.",
             )
             db.log_evento("solicitud", f"Desbloqueo auto-generado por GCG para {c['nombre']} (DNI {c['dni']})")
-            _notificar_solicitud(c["nombre"], c["dni"], c["jrt"], c["razon_social"], documentos_txt, fecha, ya_autorizada=True)
+            _notificar_solicitud(solicitud_id)
             generados += 1
         time.sleep(0.3)
 
@@ -193,13 +390,132 @@ def _ejecutar_chequeo_gcg():
     )
 
 
-def _bucle_chequeo_gcg():
-    while True:
-        time.sleep(CHEQUEO_GCG_INTERVALO_SEG)
+# Estado del chequeo automático, para mostrarlo en pantalla. La próxima corrida
+# vive sólo en memoria (depende del hilo de este proceso); la última queda en
+# app_config para que sobreviva a un reinicio.
+_chequeo_lock = threading.Lock()
+_chequeo_estado = {"corriendo": False, "inicio": None, "proxima": None}
+
+
+def _correr_chequeo_gcg():
+    """Corre el chequeo de GCG dejando registro de cuándo empezó y terminó. Si ya
+    hay uno en curso (ej. el ciclo de 30 min justo mientras alguien tocó
+    "Chequear ahora"), no arranca otro en paralelo."""
+    if not _chequeo_lock.acquire(blocking=False):
+        db.log_evento("gcg_auto", "Chequeo de GCG omitido: ya hay uno en curso.")
+        return
+    try:
+        _chequeo_estado.update(corriendo=True, inicio=db.now_iso())
         try:
             _ejecutar_chequeo_gcg()
         except Exception as e:
             db.log_evento("gcg_auto", f"Error en el chequeo automático de GCG: {e}")
+        ultimo = db.list_eventos(limit=1, tipo="gcg_auto")
+        db.set_config({
+            "gcg_chequeo_ultimo_inicio": _chequeo_estado["inicio"],
+            "gcg_chequeo_ultimo_fin": db.now_iso(),
+            "gcg_chequeo_ultimo_resumen": ultimo[0]["mensaje"] if ultimo else "",
+        })
+    finally:
+        _chequeo_estado["corriendo"] = False
+        _chequeo_lock.release()
+
+
+def estado_chequeo_gcg():
+    cfg = db.get_config()
+    return {
+        "corriendo": _chequeo_estado["corriendo"],
+        "inicio": _chequeo_estado["inicio"] if _chequeo_estado["corriendo"] else None,
+        "ultimo_fin": cfg.get("gcg_chequeo_ultimo_fin") or None,
+        "ultimo_resumen": cfg.get("gcg_chequeo_ultimo_resumen") or "",
+        "proxima": _chequeo_estado["proxima"],
+        "intervalo_min": CHEQUEO_GCG_INTERVALO_SEG // 60,
+        "ahora": db.now_iso(),
+    }
+
+
+def _bucle_chequeo_gcg():
+    while True:
+        _chequeo_estado["proxima"] = datetime.fromtimestamp(time.time() + CHEQUEO_GCG_INTERVALO_SEG).isoformat(timespec="seconds")
+        time.sleep(CHEQUEO_GCG_INTERVALO_SEG)
+        _correr_chequeo_gcg()
+
+
+_mapeo_lock = threading.Lock()
+_mapeo_estado = {"corriendo": False, "hechos": 0, "total": 0}
+
+
+def _ejecutar_mapeo_transportes():
+    """Consulta a GCG a cada chofer visto en el último año y registra en qué
+    contratista figura hoy. Devuelve True si pudo completar el barrido."""
+    if not gcg_api.api_key_configurada():
+        db.log_evento("mapeo", "Barrido de transportes omitido: no hay API key de GCG configurada.")
+        return False
+    desde = (datetime.now() - timedelta(days=MAPEO_DIAS_VISTOS)).isoformat(timespec="seconds")
+    dnis = db.dnis_vistos_desde(desde)
+    if not dnis:
+        db.log_evento("mapeo", "Barrido de transportes omitido: todavía no hay choferes en el historial (subí un exportado de GCG).")
+        return False
+
+    anteriores = db.ultimo_contratista_por_dni()
+    _mapeo_estado.update(hechos=0, total=len(dnis))
+    pendientes = []
+    registrados = cambios = no_encontrados = errores = 0
+    for dni in dnis:
+        try:
+            data = gcg_api.consultar_trabajador(dni)
+        except Exception:
+            errores += 1
+            data = None
+        obs = db.observacion_desde_gcg(data, "mapeo_mensual") if data else None
+        if obs:
+            if pipeline._norm(anteriores.get(dni)) != pipeline._norm(obs["contratista"]):
+                cambios += 1
+            pendientes.append(obs)
+            registrados += 1
+        elif data is not None:
+            no_encontrados += 1
+        if len(pendientes) >= 200:
+            db.insert_historial_contratista(pendientes)
+            pendientes = []
+        _mapeo_estado["hechos"] += 1
+        time.sleep(0.3)
+    db.insert_historial_contratista(pendientes)
+    db.log_evento(
+        "mapeo",
+        f"Barrido de transportes terminado: {len(dnis)} choferes consultados, {registrados} registrados, "
+        f"{cambios} con un contratista distinto al de la vez anterior, {no_encontrados} sin datos en GCG, "
+        f"{errores} con error de consulta.",
+    )
+    return True
+
+
+def _correr_mapeo_transportes(manual=False):
+    if not _mapeo_lock.acquire(blocking=False):
+        return
+    try:
+        _mapeo_estado["corriendo"] = True
+        try:
+            completo = _ejecutar_mapeo_transportes()
+        except Exception as e:
+            completo = False
+            db.log_evento("mapeo", f"Error en el barrido de transportes: {e}")
+        if completo:
+            valores = {"mapeo_ultimo_fin": db.now_iso()}
+            if not manual:
+                valores["mapeo_ultimo_mes"] = datetime.now().strftime("%Y-%m")
+            db.set_config(valores)
+    finally:
+        _mapeo_estado["corriendo"] = False
+        _mapeo_lock.release()
+
+
+def _bucle_mapeo_transportes():
+    while True:
+        time.sleep(MAPEO_REVISION_SEG)
+        ahora = datetime.now()
+        if ahora.hour >= MAPEO_HORA_DESDE and db.get_config().get("mapeo_ultimo_mes") != ahora.strftime("%Y-%m"):
+            _correr_mapeo_transportes()
 
 
 # Con el reloader de Flask (debug=True) el script se importa dos veces: una en el
@@ -211,11 +527,16 @@ def _bucle_chequeo_gcg():
 app.debug = True
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     threading.Thread(target=_bucle_chequeo_gcg, daemon=True).start()
+    threading.Thread(target=_bucle_mapeo_transportes, daemon=True).start()
 
 
 @app.before_request
 def requerir_login():
-    if request.endpoint in ("login", "static") or request.endpoint is None:
+    global _url_base_vista
+    if request.host.split(":")[0] not in ("localhost", "127.0.0.1"):
+        _url_base_vista = request.host_url
+    # Los botones del mail entran sin login: los valida el token firmado.
+    if request.endpoint in ("login", "static", "accion_mail") or request.endpoint is None:
         return None
     if not auth.current_user():
         return redirect(url_for("login", next=request.path))
@@ -376,6 +697,9 @@ def subir_export():
         f"({resumen['total_excluidos']} excluidos por extranjero/independiente, "
         f"{resumen['total_sin_proveedor']} sin número de proveedor)."
     )
+    if resumen["total_bajas"]:
+        msg += (f" {resumen['total_bajas']} dados de baja no se controlan "
+                "(sólo quedan en el historial de transportes).")
     if resumen["missing_doc_cols"]:
         msg += " No se encontraron columnas para: " + ", ".join(resumen["missing_doc_cols"])
     flash(msg, "ok")
@@ -388,7 +712,7 @@ def subir_export():
     # Dispara el chequeo de GCG al toque, sin esperar el ciclo de 30 min, para que
     # esta corrida ya genere sus solicitudes de desbloqueo si corresponde.
     db.log_evento("gcg_auto", "Chequeo de GCG disparado automáticamente al procesar la corrida", usuario=user)
-    threading.Thread(target=_ejecutar_chequeo_gcg, daemon=True).start()
+    threading.Thread(target=_correr_chequeo_gcg, daemon=True).start()
 
     return redirect(url_for("dashboard", run_id=resumen["run_id"]))
 
@@ -483,6 +807,9 @@ def gcg_consultar():
         except Exception as e:
             contexto["error"] = f"No se pudo consultar GCG: {e}"
         else:
+            obs = db.observacion_desde_gcg(data, "consulta")
+            if obs:
+                db.insert_historial_contratista([obs])
             documentos_activos = db.get_documentos_control(solo_activos=True)
             criticos = gcg_api.evaluar_criticos(data, documentos_activos)
             todos_verdes = bool(criticos) and all(d["estado"] for d in criticos)
@@ -511,6 +838,7 @@ def gcg_consultar():
                 "documentos_txt": documentos_txt,
                 "solicitud_activa": solicitud_activa,
             })
+        contexto["transportes"] = list(reversed(pipeline.periodos_contratista(db.get_historial_contratista(dni))))
 
     return render_template("gcg_consulta.html", **contexto)
 
@@ -600,8 +928,7 @@ def solicitar_desbloqueo():
         )
         db.log_evento("solicitud", f"Solicitud de {nombre} auto-aprobada ({comentario})", usuario=user)
 
-    _notificar_solicitud(nombre, dni, jrt, razon_social, documentos, fecha_solicitud,
-                          autor_user=user, ya_autorizada=auto_aprueba)
+    _notificar_solicitud(solicitud_id, autor_user=user)
 
     return redirect(request.referrer or url_for("dashboard"))
 
@@ -613,6 +940,7 @@ def solicitudes():
     for s in lista:
         s["gcg_documentos"] = None
         s["gcg_trabajador"] = None
+        s["gcg_raw"] = None
         if s.get("gcg_json"):
             try:
                 data = json.loads(s["gcg_json"])
@@ -625,7 +953,10 @@ def solicitudes():
                     "dni": data.get("dni"),
                     "habilitado": data.get("habilitado"),
                 }
-    return render_template("solicitudes.html", solicitudes=lista)
+                # El JSON completo tal como lo devolvió GCG (datos del chofer,
+                # contratista y sus documentos), para verlo en el modal.
+                s["gcg_raw"] = data
+    return render_template("solicitudes.html", solicitudes=lista, chequeo=estado_chequeo_gcg())
 
 
 @app.route("/solicitudes/export.xlsx")
@@ -648,6 +979,7 @@ def solicitud_autorizar(solicitud_id):
     db.autorizar_solicitud(solicitud_id, user["id"], user["nombre_completo"] or user["username"])
     flash("Solicitud autorizada.", "ok")
     db.log_evento("solicitud", f"Solicitud #{solicitud_id} autorizada ({s['nombre'] if s else ''})", usuario=user)
+    _notificar_resolucion(solicitud_id, user)
     return redirect(url_for("solicitudes"))
 
 
@@ -658,7 +990,112 @@ def solicitud_rechazar(solicitud_id):
     db.rechazar_solicitud(solicitud_id, user["id"], user["nombre_completo"] or user["username"], comentario)
     flash("Solicitud rechazada.", "ok")
     db.log_evento("solicitud", f"Solicitud #{solicitud_id} rechazada" + (f" ({comentario})" if comentario else ""), usuario=user)
+    _notificar_resolucion(solicitud_id, user)
     return redirect(url_for("solicitudes"))
+
+
+@app.route("/m/<token>", methods=["GET", "POST"])
+def accion_mail(token):
+    """Botones Aceptar / Rechazar del mail. El GET sólo muestra la confirmación
+    (Outlook y el antivirus abren los links solos al escanear el mail); la
+    solicitud se resuelve recién con el POST del botón Confirmar."""
+    try:
+        datos = _token_serializer.loads(token, max_age=TOKEN_MAIL_DIAS * 24 * 3600)
+    except SignatureExpired:
+        return render_template("accion_mail.html", error=f"El link venció (dura {TOKEN_MAIL_DIAS} días). Entrá al sistema para resolver la solicitud."), 410
+    except BadSignature:
+        return render_template("accion_mail.html", error="El link no es válido."), 400
+
+    accion = datos.get("a")
+    s = db.get_solicitud(datos.get("s"))
+    user = db.get_usuario(datos.get("u"))
+    if not s or not user or not user["activo"] or accion not in ("autorizar", "rechazar"):
+        return render_template("accion_mail.html", error="El link no es válido."), 400
+    # Se revalida al momento del click: puede que ya no sea quien la tiene que
+    # autorizar (volvió el titular de vacaciones, le sacaron los botones al admin).
+    habilitado = db.es_responsable_jrt(user, s) or (
+        user["rol"] == "admin" and db.get_config().get("mail_botones_admin") == "1"
+    )
+    if not habilitado:
+        return render_template("accion_mail.html", s=s, error="Ya no estás habilitado para resolver esta solicitud desde el mail."), 403
+    if s["solicitado_por_id"] == user["id"] and user["rol"] != "admin":
+        return render_template("accion_mail.html", s=s, error="No podés autorizar tu propia solicitud."), 403
+
+    contexto = {
+        "s": s, "accion": accion, "usuario": user, "token": token,
+        "documentos_gcg": _situacion_documental(s),
+        "motivo_bloqueo": _motivo_bloqueo_txt(db.get_estado_bloqueo(s["dni"])),
+    }
+    if s["estado"] != "solicitado":
+        return render_template("accion_mail.html", ya_resuelta=True, **contexto)
+    if request.method == "GET":
+        return render_template("accion_mail.html", **contexto)
+
+    nombre = user["nombre_completo"] or user["username"]
+    comentario = (request.form.get("comentario") or "").strip() or None
+    if accion == "autorizar":
+        db.autorizar_solicitud(s["id"], user["id"], nombre, comentario=comentario)
+    else:
+        db.rechazar_solicitud(s["id"], user["id"], nombre, comentario=comentario)
+    db.log_evento(
+        "solicitud",
+        f"Solicitud #{s['id']} {'autorizada' if accion == 'autorizar' else 'rechazada'} desde el mail ({s['nombre']})"
+        + (f" ({comentario})" if comentario else ""),
+        usuario=user,
+    )
+    _notificar_resolucion(s["id"], user)
+    contexto["s"] = db.get_solicitud(s["id"])
+    return render_template("accion_mail.html", hecho=True, **contexto)
+
+
+@app.route("/vacaciones", methods=["GET", "POST"])
+def vacaciones():
+    """Un JRT carga quién lo cubre mientras está de vacaciones (el admin lo
+    puede hacer para cualquiera desde Configuración → Usuarios)."""
+    user = auth.current_user()
+    if user["rol"] != "jrt":
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        _guardar_reemplazo(user["id"], user)
+        return redirect(url_for("vacaciones"))
+    return render_template(
+        "vacaciones.html",
+        titular=user,
+        candidatos=_candidatos_reemplazo(user["id"]),
+        vigente=db.get_reemplazo_vigente(user),
+    )
+
+
+def _candidatos_reemplazo(titular_id):
+    return [u for u in db.list_usuarios() if u["activo"] and u["rol"] in ("jrt", "admin") and u["id"] != titular_id]
+
+
+def _guardar_reemplazo(titular_id, actor):
+    """Guarda (o borra, con "quitar") el reemplazo de vacaciones de un JRT."""
+    titular = db.get_usuario(titular_id)
+    if not titular:
+        return
+    if request.form.get("quitar"):
+        db.set_usuario_reemplazo(titular_id, None, None, None)
+        flash("Reemplazo quitado: los mails vuelven a llegarle al titular.", "ok")
+        db.log_evento("usuario", f"Reemplazo de vacaciones de {titular['username']} quitado", usuario=actor)
+        return
+    cubierto_por_id = request.form.get("cubierto_por_id", type=int)
+    desde = request.form.get("ausencia_desde") or None
+    hasta = request.form.get("ausencia_hasta") or None
+    candidatos = {u["id"]: u for u in _candidatos_reemplazo(titular_id)}
+    if cubierto_por_id not in candidatos:
+        flash("Elegí quién te cubre.", "error")
+        return
+    if desde and hasta and hasta < desde:
+        flash("La fecha 'hasta' no puede ser anterior a 'desde'.", "error")
+        return
+    db.set_usuario_reemplazo(titular_id, cubierto_por_id, desde, hasta)
+    reemplazo = candidatos[cubierto_por_id]
+    periodo = f"{db.fmt_fecha(desde) if desde else 'ya'} → {db.fmt_fecha(hasta) if hasta else 'hasta que se quite'}"
+    flash(f"Listo: {reemplazo['nombre_completo'] or reemplazo['username']} cubre a "
+          f"{titular['nombre_completo'] or titular['username']} ({periodo}).", "ok")
+    db.log_evento("usuario", f"Reemplazo de vacaciones de {titular['username']}: {reemplazo['username']} ({periodo})", usuario=actor)
 
 
 @app.route("/solicitudes/<int:solicitud_id>/ejecutar", methods=["POST"])
@@ -700,7 +1137,13 @@ def admin():
         gcg_intervalo_min=CHEQUEO_GCG_INTERVALO_SEG // 60,
         gcg_sin_mapear=[d for d in documentos if d["activo"] and not d.get("gcg_doc_numero")],
         gcg_eventos=db.list_eventos(limit=20, tipo="gcg_auto"),
+        mapeo_estado=dict(_mapeo_estado),
+        mapeo_eventos=db.list_eventos(limit=5, tipo="mapeo"),
+        mapeo_hora_desde=MAPEO_HORA_DESDE,
         run=db.get_last_run(),
+        url_base_detectada=url_base_app() if not db.get_config().get("app_url") else None,
+        reemplazos={u["id"]: db.get_reemplazo_vigente(u) for u in db.list_usuarios() if u["rol"] == "jrt"},
+        candidatos_reemplazo={u["id"]: _candidatos_reemplazo(u["id"]) for u in db.list_usuarios() if u["rol"] == "jrt"},
     )
 
 
@@ -721,6 +1164,9 @@ def admin_config():
     nueva_password = request.form.get("smtp_password", "")
     if nueva_password:
         valores["smtp_password"] = nueva_password
+    if request.form.get("tab") == "general":
+        valores["app_url"] = request.form.get("app_url", "").strip()
+        valores["mail_botones_admin"] = "1" if request.form.get("mail_botones_admin") == "1" else "0"
     db.set_config(valores)
     flash("Configuración guardada.", "ok")
     tab = request.form.get("tab", "general")
@@ -746,9 +1192,38 @@ def admin_gcg_api_key():
 def admin_gcg_chequear_ahora():
     user = auth.current_user()
     db.log_evento("gcg_auto", "Chequeo manual de GCG iniciado desde Configuración", usuario=user)
-    threading.Thread(target=_ejecutar_chequeo_gcg, daemon=True).start()
+    threading.Thread(target=_correr_chequeo_gcg, daemon=True).start()
     flash("Chequeo de GCG iniciado en segundo plano. El resultado va a aparecer en la Actividad en unos minutos.", "ok")
     return redirect(url_for("admin", tab="gcg"))
+
+
+@app.route("/admin/gcg/mapeo-ahora", methods=["POST"])
+@auth.admin_required
+def admin_gcg_mapeo_ahora():
+    if _mapeo_estado["corriendo"]:
+        flash("El barrido de transportes ya está corriendo.", "error")
+    else:
+        db.log_evento("mapeo", "Barrido de transportes iniciado a mano desde Configuración", usuario=auth.current_user())
+        threading.Thread(target=_correr_mapeo_transportes, kwargs={"manual": True}, daemon=True).start()
+        flash("Barrido de transportes iniciado en segundo plano. Tarda aprox. una hora; el resultado queda en Actividad.", "ok")
+    return redirect(url_for("admin", tab="gcg"))
+
+
+@app.route("/admin/gcg/transportes.xlsx")
+@auth.admin_required
+def admin_gcg_transportes_excel():
+    buf = pipeline.exportar_excel_transportes()
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=f"transportes_choferes_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/gcg/estado.json")
+def gcg_estado_json():
+    return estado_chequeo_gcg()
 
 
 @app.route("/admin/gcg/eventos.json")
@@ -849,6 +1324,15 @@ def admin_doc_gcg_numero(doc_id):
     return redirect(url_for("admin", tab="documentos"))
 
 
+@app.route("/admin/documentos/<int:doc_id>/paises", methods=["POST"])
+@auth.admin_required
+def admin_doc_paises(doc_id):
+    paises = db.set_documento_paises(doc_id, request.form.get("paises", ""))
+    flash("Países actualizados.", "ok")
+    db.log_evento("documento", f"Documento #{doc_id}: países controlados actualizados a {paises or '(todos)'}", usuario=auth.current_user())
+    return redirect(url_for("admin", tab="documentos"))
+
+
 @app.route("/admin/documentos/<int:doc_id>/toggle", methods=["POST"])
 @auth.admin_required
 def admin_doc_toggle(doc_id):
@@ -921,6 +1405,13 @@ def admin_usuarios_mail(user_id):
     return redirect(url_for("admin", tab="usuarios"))
 
 
+@app.route("/admin/usuarios/<int:user_id>/reemplazo", methods=["POST"])
+@auth.admin_required
+def admin_usuarios_reemplazo(user_id):
+    _guardar_reemplazo(user_id, auth.current_user())
+    return redirect(url_for("admin", tab="usuarios"))
+
+
 @app.route("/admin/usuarios/<int:user_id>/resetear-password", methods=["POST"])
 @auth.admin_required
 def admin_usuarios_resetear(user_id):
@@ -937,4 +1428,4 @@ def admin_usuarios_resetear(user_id):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=PUERTO, debug=True)

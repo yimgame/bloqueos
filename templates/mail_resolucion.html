@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2328;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;">
+<tr><td align="center" style="padding:20px 10px;">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e1e4e8;">
+  <tr><td style="background:{{ '#1e7d32' if aprobada else '#b3261e' }};color:#ffffff;padding:14px 20px;font-size:16px;font-weight:600;">
+    Solicitud {{ 'APROBADA' if aprobada else 'RECHAZADA' }}{% if prio1 %} · PRIO 1{% endif %}
+  </td></tr>
+  <tr><td style="padding:18px 20px;">
+    <table role="presentation" cellpadding="4" cellspacing="0" style="font-size:14px;margin-bottom:14px;">
+      <tr><td style="color:#6b7280;">Chofer</td><td><strong>{{ s.nombre }}</strong></td></tr>
+      <tr><td style="color:#6b7280;">DNI</td><td>{{ s.dni }}</td></tr>
+      <tr><td style="color:#6b7280;">JRT</td><td>{{ s.jrt or '—' }}</td></tr>
+      <tr><td style="color:#6b7280;">Proveedor</td><td>{{ s.razon_social or '—' }}</td></tr>
+      <tr><td style="color:#6b7280;">Documentos</td><td>{{ s.documentos or '—' }}</td></tr>
+      <tr><td style="color:#6b7280;">Pedida por</td><td>{{ s.solicitado_por_nombre }} · {{ s.fecha_solicitud|fecha(true) }}</td></tr>
+      <tr><td style="color:#6b7280;">{{ 'Aprobada' if aprobada else 'Rechazada' }} por</td><td><strong>{{ s.autorizado_por_nombre }}</strong> · {{ s.fecha_autorizacion|fecha(true) }}</td></tr>
+      <tr><td style="color:#6b7280;vertical-align:top;">{{ 'Comentario' if aprobada else 'Motivo' }}</td><td>{{ s.comentario or '—' }}</td></tr>
+    </table>
+    {% if aprobada %}
+    <p style="margin:0 0 14px;padding:8px 12px;background:#dbeafe;color:#1d4ed8;">Pendiente de liberar en JDE.{% if prio1 %} La aprobó una persona: va antes que las automáticas.{% endif %}</p>
+    {% else %}
+    <p style="margin:0 0 14px;padding:8px 12px;background:#fdecea;color:#b3261e;">No se libera.</p>
+    {% endif %}
+    <p style="margin:0;"><a href="{{ url_solicitudes }}" style="color:#1f4e8c;">Ver todas las solicitudes en el sistema</a></p>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>

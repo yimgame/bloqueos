@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2328;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;">
+<tr><td align="center" style="padding:20px 10px;">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="max-width:640px;width:100%;background:#ffffff;border:1px solid #e1e4e8;">
+  <tr><td style="background:#1f4e8c;color:#ffffff;padding:14px 20px;font-size:16px;font-weight:600;">
+    {% if s.estado == 'solicitado' %}Solicitud de desbloqueo{% else %}Desbloqueo pendiente de liberación{% endif %}
+  </td></tr>
+  <tr><td style="padding:18px 20px;">
+    <p style="margin:0 0 14px;">Hola {{ destinatario.nombre_completo or destinatario.username }},
+      <strong>{{ s.solicitado_por_nombre }}</strong> pidió el desbloqueo de este chofer:</p>
+
+    <table role="presentation" cellpadding="4" cellspacing="0" style="font-size:14px;margin-bottom:14px;">
+      <tr><td style="color:#6b7280;">Chofer</td><td><strong>{{ s.nombre }}</strong></td></tr>
+      <tr><td style="color:#6b7280;">DNI</td><td>{{ s.dni }}</td></tr>
+      <tr><td style="color:#6b7280;">JRT</td><td>{{ s.jrt or '—' }}</td></tr>
+      <tr><td style="color:#6b7280;">Proveedor</td><td>{{ s.razon_social or '—' }}</td></tr>
+      <tr><td style="color:#6b7280;">Documentos vencidos</td><td>{{ s.documentos or '—' }}</td></tr>
+      <tr><td style="color:#6b7280;vertical-align:top;">Motivo del bloqueo</td><td>{{ motivo_bloqueo }}</td></tr>
+      <tr><td style="color:#6b7280;">Pedido el</td><td>{{ s.fecha_solicitud|fecha(true) }}</td></tr>
+    </table>
+
+    {% if s.estado == 'solicitado' and url_aceptar %}
+    <table role="presentation" cellpadding="0" cellspacing="0" style="margin:6px 0 18px;">
+      <tr>
+        <td bgcolor="#1e7d32" style="border-radius:6px;">
+          <a href="{{ url_aceptar }}" style="display:inline-block;padding:11px 26px;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;">Aceptar</a>
+        </td>
+        <td style="width:12px;"></td>
+        <td bgcolor="#b3261e" style="border-radius:6px;">
+          <a href="{{ url_rechazar }}" style="display:inline-block;padding:11px 26px;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;">Rechazar</a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0 0 18px;color:#6b7280;font-size:12px;">Al hacer click se abre una página para confirmar (no hace falta loguearse).</p>
+    {% elif s.estado == 'solicitado' %}
+    <p style="margin:0 0 18px;padding:8px 12px;background:#fef3d9;color:#92600a;">Queda pendiente de autorización del JRT.</p>
+    {% else %}
+    <p style="margin:0 0 18px;padding:8px 12px;background:#dbeafe;color:#1d4ed8;">Ya quedó autorizada: pendiente de liberar en JDE.</p>
+    {% endif %}
+
+    <h3 style="font-size:14px;margin:0 0 6px;">Situación de la documentación en GCG</h3>
+    {% if documentos_gcg %}
+    <p style="margin:0 0 6px;color:#6b7280;font-size:12px;">Consultado el {{ s.gcg_consultado_en|fecha(true) }}. Los críticos van primero, en negrita.</p>
+    <table cellpadding="5" cellspacing="0" style="border-collapse:collapse;font-size:13px;width:100%;">
+      <tr style="background:#f4f5f7;">
+        <th align="left" style="border-bottom:1px solid #e1e4e8;">Documento</th>
+        <th align="left" style="border-bottom:1px solid #e1e4e8;">Vencimiento</th>
+        <th align="left" style="border-bottom:1px solid #e1e4e8;">Estado</th>
+      </tr>
+      {% for d in documentos_gcg %}
+      <tr>
+        <td style="border-bottom:1px solid #eef0f2;{{ 'font-weight:600;' if d.critico }}">{{ d.nombre }}</td>
+        <td style="border-bottom:1px solid #eef0f2;">{{ d.fecha or '—' }}</td>
+        <td style="border-bottom:1px solid #eef0f2;color:{{ '#1e7d32' if d.estado else '#b3261e' }};font-weight:600;">{{ 'Vigente' if d.estado else 'Vencido' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% elif s.gcg_error %}
+    <p style="margin:0;color:#b3261e;">No se pudo consultar GCG al generar la solicitud: {{ s.gcg_error }}</p>
+    {% else %}
+    <p style="margin:0;color:#6b7280;">No hay consulta a GCG guardada para esta solicitud.</p>
+    {% endif %}
+
+    <p style="margin:20px 0 0;"><a href="{{ url_solicitudes }}" style="color:#1f4e8c;">Ver todas las solicitudes en el sistema</a></p>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>

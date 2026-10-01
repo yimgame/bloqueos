@@ -6,7 +6,10 @@ from email.message import EmailMessage
 import db
 
 
-def enviar_mail(destinatarios_to, destinatarios_cc, asunto, cuerpo, adjunto_bytes=None, adjunto_nombre=None):
+def enviar_mail(destinatarios_to, destinatarios_cc, asunto, cuerpo, adjunto_bytes=None, adjunto_nombre=None,
+                html=None):
+    """cuerpo es el texto plano; si viene html, va como versión alternativa (la
+    que muestran Outlook y cualquier cliente moderno)."""
     cfg = db.get_config()
     host = (cfg.get("smtp_host") or "").strip()
     if not host:
@@ -27,6 +30,8 @@ def enviar_mail(destinatarios_to, destinatarios_cc, asunto, cuerpo, adjunto_byte
     if destinatarios_cc:
         msg["Cc"] = ", ".join(destinatarios_cc)
     msg.set_content(cuerpo)
+    if html:
+        msg.add_alternative(html, subtype="html")
 
     if adjunto_bytes is not None:
         msg.add_attachment(

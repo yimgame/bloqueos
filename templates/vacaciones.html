@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Vacaciones{% endblock %}
+
+{% block content %}
+<section class="panel">
+  <h2>Vacaciones: quién me cubre</h2>
+  <p class="muted">Mientras dure el período, los mails de solicitud de desbloqueo de tus choferes (con los botones
+     Aceptar / Rechazar) le llegan a quien te cubre. Vos seguís en copia, sin botones, para tener el registro.
+     Si dejás "Hasta" vacío, rige hasta que lo quites.</p>
+
+  {% if vigente %}
+    <div class="flash flash-ok">Hoy te cubre <strong>{{ vigente.nombre_completo or vigente.username }}</strong>.</div>
+  {% elif titular.cubierto_por_id %}
+    <div class="flash">Tenés un reemplazo cargado, pero hoy no está vigente (fuera de fechas o usuario inactivo).</div>
+  {% endif %}
+
+  <form method="post" class="inline-form">
+    <label>Me cubre
+      <select name="cubierto_por_id" required>
+        <option value="">— elegir —</option>
+        {% for c in candidatos %}
+        <option value="{{ c.id }}" {{ 'selected' if titular.cubierto_por_id == c.id }}>{{ c.nombre_completo or c.username }}{{ ' (admin)' if c.rol == 'admin' }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Desde
+      <input type="date" name="ausencia_desde" value="{{ titular.ausencia_desde or '' }}">
+    </label>
+    <label>Hasta
+      <input type="date" name="ausencia_hasta" value="{{ titular.ausencia_hasta or '' }}">
+    </label>
+    <button type="submit">Guardar</button>
+    {% if titular.cubierto_por_id %}
+      <button type="submit" name="quitar" value="1" class="btn-muted" formnovalidate>Quitar reemplazo</button>
+    {% endif %}
+  </form>
+</section>
+{% endblock %}

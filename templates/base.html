@@ -11,12 +11,17 @@
   <div class="topbar-inner">
     <a class="brand" href="{{ url_for('dashboard') }}">Bloqueo de choferes · doc. crítica</a>
     <nav>
+      {% if current_user %}
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
       <a href="{{ url_for('historial') }}">Historial</a>
       <a href="{{ url_for('solicitudes') }}">Solicitudes</a>
       <a href="{{ url_for('gcg_consultar') }}">Buscar en GCG</a>
+      {% if current_user and current_user.rol == 'jrt' %}
+        <a href="{{ url_for('vacaciones') }}">Vacaciones</a>
+      {% endif %}
       {% if current_user and current_user.rol == 'admin' %}
         <a href="{{ url_for('admin') }}">Configuración</a>
+      {% endif %}
       {% endif %}
       {% if current_user %}
         <span class="nav-user">{{ current_user.nombre_completo or current_user.username }}</span>

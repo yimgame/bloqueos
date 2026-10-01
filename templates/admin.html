@@ -30,8 +30,18 @@
       <label>Días de anticipo por defecto
         <input type="number" name="dias_alerta_default" min="0" max="90" value="{{ config.dias_alerta_default }}">
       </label>
+      <label>URL de la app (para los links de los mails)
+        <input type="url" name="app_url" value="{{ config.app_url }}" placeholder="{{ url_base_detectada or 'http://servidor:5000/' }}">
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="mail_botones_admin" value="1" {{ 'checked' if config.mail_botones_admin == '1' }}>
+        Los administradores también reciben los botones Aceptar / Rechazar en el mail de solicitud
+      </label>
       <button type="submit">Guardar</button>
     </form>
+    <p class="muted">URL de la app: si queda vacía, los links de los mails se arman con la dirección con la que
+       se entró a la app{% if url_base_detectada %} (hoy: <code>{{ url_base_detectada }}</code>){% endif %}.
+       Cargala cuando la app pase a un servidor fijo.</p>
   </section>
 </section>
 
@@ -88,10 +98,15 @@
     <p class="muted">La columna <strong>Nº GCG</strong> es el número de documento del catálogo de GCG (ver
        gcg/criticos.xlsx) que le corresponde a cada uno — lo usa el chequeo automático para preguntarle a la
        API de GCG si ese documento ya está vigente. Sin este número no se puede auto-generar el desbloqueo.</p>
+    <p class="muted">La columna <strong>Países</strong> indica a qué choferes se les controla el documento, según el
+       país de la columna "País" del exportado (o el campo <code>iso</code> de la API): códigos ISO separados por
+       coma, ej. <code>AR</code> o <code>AR,PY</code>. A los choferes de otros países no se los bloquea por ese
+       documento. Vacío = se controla a todos los países.
+       Códigos: AR Argentina · BO Bolivia · BR Brasil · CL Chile · PY Paraguay · UY Uruguay.</p>
 
     <div class="table-wrap">
     <table>
-      <thead><tr><th>Documento</th><th>Nº GCG</th><th>Activo</th><th></th></tr></thead>
+      <thead><tr><th>Documento</th><th>Nº GCG</th><th>Países</th><th>Activo</th><th></th></tr></thead>
       <tbody>
         {% for d in documentos %}
         <tr>
@@ -104,6 +119,12 @@
           <td>
             <form action="{{ url_for('admin_doc_gcg_numero', doc_id=d.id) }}" method="post" class="inline-form-tight">
               <input type="number" name="gcg_doc_numero" value="{{ d.gcg_doc_numero or '' }}" min="1" style="width: 80px;">
+              <button type="submit" class="btn-muted">Guardar</button>
+            </form>
+          </td>
+          <td>
+            <form action="{{ url_for('admin_doc_paises', doc_id=d.id) }}" method="post" class="inline-form-tight">
+              <input type="text" name="paises" value="{{ d.paises or '' }}" placeholder="todos" style="width: 90px; text-transform: uppercase;">
               <button type="submit" class="btn-muted">Guardar</button>
             </form>
           </td>
@@ -199,7 +220,7 @@
     <h2>Usuarios</h2>
     <div class="table-wrap">
     <table>
-      <thead><tr><th>Usuario</th><th>Nombre</th><th>JRT</th><th>Mail</th><th>Rol</th><th>Activo</th><th>Restablecer contraseña</th></tr></thead>
+      <thead><tr><th>Usuario</th><th>Nombre</th><th>JRT</th><th>Mail</th><th>Rol</th><th>Activo</th><th>Vacaciones (lo cubre)</th><th>Restablecer contraseña</th></tr></thead>
       <tbody>
         {% for u in usuarios %}
         <tr>
@@ -218,6 +239,23 @@
               <input type="hidden" name="activo" value="{{ 0 if u.activo else 1 }}">
               <button type="submit" class="{{ 'btn-ok' if u.activo else 'btn-muted' }}">{{ 'Sí' if u.activo else 'No' }}</button>
             </form>
+          </td>
+          <td>
+            {% if u.rol == 'jrt' %}
+            <form action="{{ url_for('admin_usuarios_reemplazo', user_id=u.id) }}" method="post" class="inline-form-tight">
+              <select name="cubierto_por_id">
+                <option value="">— nadie —</option>
+                {% for c in candidatos_reemplazo[u.id] %}
+                <option value="{{ c.id }}" {{ 'selected' if u.cubierto_por_id == c.id }}>{{ c.nombre_completo or c.username }}</option>
+                {% endfor %}
+              </select>
+              <input type="date" name="ausencia_desde" value="{{ u.ausencia_desde or '' }}" title="Desde">
+              <input type="date" name="ausencia_hasta" value="{{ u.ausencia_hasta or '' }}" title="Hasta">
+              <button type="submit" class="btn-muted">Guardar</button>
+              {% if u.cubierto_por_id %}<button type="submit" name="quitar" value="1" class="btn-muted" formnovalidate>Quitar</button>{% endif %}
+            </form>
+            {% if reemplazos[u.id] %}<div class="muted small">Hoy lo cubre {{ reemplazos[u.id].nombre_completo or reemplazos[u.id].username }}</div>{% endif %}
+            {% else %}—{% endif %}
           </td>
           <td>
             <form action="{{ url_for('admin_usuarios_resetear', user_id=u.id) }}" method="post" class="inline-form-tight">
@@ -338,6 +376,41 @@
         <p class="muted" id="gcg-eventos-vacio">Todavía no corrió ningún chequeo.</p>
       {% endif %}
     </div>
+  </section>
+
+  <section class="panel">
+    <h2>Historial de transportes</h2>
+    <p class="muted">Cada vez que vemos a un chofer (al subir un exportado, en una solicitud de desbloqueo o en el
+       buscador) queda registrado en qué contratista figuraba. Además, una vez por mes (a partir de las
+       {{ mapeo_hora_desde }} hs) se consulta en la API de GCG a todos los choferes vistos en el último año, para
+       mapear dónde está trabajando cada uno. El barrido tarda aprox. una hora.</p>
+    <p>
+      {% if mapeo_estado.corriendo %}
+        <span class="estado-chip estado-autorizado">corriendo: {{ mapeo_estado.hechos }} de {{ mapeo_estado.total }}</span>
+      {% else %}
+        Último barrido completo:
+        {% if config.mapeo_ultimo_fin %}{{ config.mapeo_ultimo_fin|fecha(true) }}{% else %}<span class="muted">todavía no corrió</span>{% endif %}
+      {% endif %}
+    </p>
+    <div class="inline-form">
+      <a class="btn-link" href="{{ url_for('admin_gcg_transportes_excel') }}">Descargar Excel de transportes</a>
+      <form action="{{ url_for('admin_gcg_mapeo_ahora') }}" method="post" class="inline-form-tight"
+            onsubmit="return confirm('Esto consulta a GCG a todos los choferes vistos en el último año (aprox. una hora). ¿Arrancar ahora?');">
+        <button type="submit" class="btn-muted" {{ 'disabled' if mapeo_estado.corriendo }}>Correr barrido ahora</button>
+      </form>
+    </div>
+    {% if mapeo_eventos %}
+    <div class="table-wrap" style="margin-top: 12px;">
+      <table>
+        <thead><tr><th>Fecha</th><th>Detalle</th></tr></thead>
+        <tbody>
+          {% for e in mapeo_eventos %}
+          <tr><td class="small">{{ e.fecha|fecha(true) }}</td><td>{{ e.mensaje }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
   </section>
 </section>
 

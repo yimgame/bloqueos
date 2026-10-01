@@ -19,9 +19,19 @@
 <section class="panel">
   <div class="panel-header-row">
     <h2>Solicitudes de desbloqueo</h2>
+    <div id="chequeo-gcg" class="chequeo-gcg" data-url="{{ url_for('gcg_estado_json') }}"
+         data-estado='{{ chequeo|tojson }}' title="{{ chequeo.ultimo_resumen }}">
+      <span class="chequeo-dot"></span>
+      <span class="chequeo-titulo">Control GCG</span>
+      <span class="chequeo-estado"></span>
+      <span class="chequeo-sep">·</span>
+      <span class="chequeo-ultimo"></span>
+      <span class="chequeo-sep">·</span>
+      <span class="chequeo-proximo"></span>
+    </div>
     <a class="btn-link" href="{{ url_for('solicitudes_exportar') }}">Exportar a Excel</a>
   </div>
-  <p class="muted">Auditoría: quién pidió el desbloqueo de cada chofer, quién lo autorizó y quién lo ejecutó en GCG.</p>
+  <p class="muted">Auditoría: quién pidió el desbloqueo de cada chofer, quién lo autorizó y quién lo liberó en JDE.</p>
   {% if solicitudes %}
   <div class="table-wrap">
   <table class="enhanced-table filterable">
@@ -47,6 +57,7 @@
         <td>{{ origen_chip(s.origen) }}</td>
         <td>
           <span class="estado-chip estado-{{ s.estado }}">{{ s.estado }}</span>
+          {% if s.prio1 %}<span class="tag tag-prio1" title="La decidió una persona (JRT/admin): liberar antes que las automáticas">Prio 1</span>{% endif %}
           {% if s.comentario %}<div class="muted small">{{ s.comentario }}</div>{% endif %}
         </td>
         <td>{{ s.solicitado_por_nombre }}<div class="muted small">{{ s.fecha_solicitud|fecha(true) if s.fecha_solicitud else '' }}</div></td>
@@ -99,6 +110,7 @@
       "documentos": s.gcg_documentos,
       "consultado_en": s.gcg_consultado_en,
       "error": s.gcg_error,
+      "raw": s.gcg_raw,
     } | tojson }}</script>
     {% endif %}
   {% endfor %}
@@ -117,10 +129,25 @@
         <tbody id="doc-modal-body"></tbody>
       </table>
     </div>
+    <div id="doc-modal-contratista" hidden>
+      <h4 id="doc-modal-contratista-title" class="modal-subtitle"></h4>
+      <p class="muted" id="doc-modal-contratista-meta"></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Documento del contratista</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+          <tbody id="doc-modal-contratista-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <details id="doc-modal-raw" class="modal-raw" hidden>
+      <summary>Ver JSON completo de GCG</summary>
+      <pre id="doc-modal-raw-pre"></pre>
+    </details>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='doc-modal.js') }}" defer></script>
+<script src="{{ url_for('static', filename='chequeo-gcg.js') }}" defer></script>
 {% endblock %}

@@ -74,13 +74,20 @@ def _docs_por_numero(data):
     return {str(d.get("nombre") or "").strip().lstrip("0") or "0": d for d in (data.get("documentos") or [])}
 
 
+def documentos_aplicables(data, documentos_control):
+    """Los documentos críticos que se le controlan a este trabajador según su país
+    (campo "iso" de la respuesta, ej. "AR", "BO")."""
+    iso = (data.get("iso") or "").strip() or None
+    return [d for d in documentos_control if db.documento_aplica_a_pais(d, iso)]
+
+
 def evaluar_criticos(data, documentos_control):
-    """Para cada documento crítico activo (con su Nº GCG mapeado), busca su estado
-    en la respuesta de GCG. Devuelve una lista de dicts:
-    {nombre, numero, encontrado, estado (bool|None), fecha}."""
+    """Para cada documento crítico activo que aplica al país del trabajador (con su
+    Nº GCG mapeado), busca su estado en la respuesta de GCG. Devuelve una lista de
+    dicts: {nombre, numero, encontrado, estado (bool|None), fecha}."""
     docs_api = _docs_por_numero(data)
     detalle = []
-    for doc in documentos_control:
+    for doc in documentos_aplicables(data, documentos_control):
         numero = doc.get("gcg_doc_numero")
         if not numero:
             detalle.append({"nombre": doc["nombre"], "numero": None, "encontrado": False, "estado": None, "fecha": None})

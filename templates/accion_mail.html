@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{% if accion == 'rechazar' %}Rechazar{% else %}Aceptar{% endif %} desbloqueo{% endblock %}
+
+{% block content %}
+<section class="panel accion-mail">
+  {% if error %}
+    <h2>No se pudo continuar</h2>
+    <div class="flash flash-error">{{ error }}</div>
+  {% else %}
+    {% if hecho %}
+      <h2>Listo</h2>
+      <div class="flash flash-ok">
+        Solicitud {{ 'aprobada' if s.estado == 'autorizado' else 'rechazada' }}. Se avisó por mail al que la pidió y a los administradores.
+      </div>
+    {% elif ya_resuelta %}
+      <h2>Esta solicitud ya fue resuelta</h2>
+      <div class="flash flash-error">
+        Está <strong>{{ s.estado }}</strong>{% if s.autorizado_por_nombre %} por {{ s.autorizado_por_nombre }} el {{ s.fecha_autorizacion|fecha(true) }}{% endif %}.
+      </div>
+    {% else %}
+      <h2>¿{{ 'Aceptar' if accion == 'autorizar' else 'Rechazar' }} el desbloqueo de {{ s.nombre }}?</h2>
+      <p class="muted">Confirmás como {{ usuario.nombre_completo or usuario.username }}.</p>
+    {% endif %}
+
+    <dl>
+      <dt>Chofer</dt><dd><strong>{{ s.nombre }}</strong></dd>
+      <dt>DNI</dt><dd>{{ s.dni }}</dd>
+      <dt>JRT</dt><dd>{{ s.jrt or '—' }}</dd>
+      <dt>Proveedor</dt><dd>{{ s.razon_social or '—' }}</dd>
+      <dt>Documentos vencidos</dt><dd>{{ s.documentos or '—' }}</dd>
+      <dt>Motivo del bloqueo</dt><dd>{{ motivo_bloqueo }}</dd>
+      <dt>Pedida por</dt><dd>{{ s.solicitado_por_nombre }} · {{ s.fecha_solicitud|fecha(true) }}</dd>
+      {% if s.comentario %}<dt>Comentario</dt><dd>{{ s.comentario }}</dd>{% endif %}
+    </dl>
+
+    {% if not hecho and not ya_resuelta %}
+    <form method="post">
+      <label>{{ 'Motivo del rechazo' if accion == 'rechazar' else 'Comentario' }} (opcional)
+        <textarea name="comentario"></textarea>
+      </label>
+      <div class="acciones">
+        {% if accion == 'autorizar' %}
+          <button type="submit" class="btn-ok">Confirmar: aceptar</button>
+        {% else %}
+          <button type="submit" class="btn-danger">Confirmar: rechazar</button>
+        {% endif %}
+      </div>
+    </form>
+    {% endif %}
+
+    {% if documentos_gcg %}
+    <h3>Situación en GCG ({{ s.gcg_consultado_en|fecha(true) }})</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Documento</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+        <tbody>
+          {% for d in documentos_gcg %}
+          <tr{% if d.critico %} class="doc-critico"{% endif %}>
+            <td>{{ d.nombre }}{% if d.critico %} <span class="tag">crítico</span>{% endif %}</td>
+            <td>{{ d.fecha or '—' }}</td>
+            <td><span class="estado-chip {{ 'estado-ejecutado' if d.estado else 'estado-rechazado' }}">{{ 'Vigente' if d.estado else 'Vencido' }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  {% endif %}
+  <p><a href="{{ url_for('solicitudes') }}">Ir a Solicitudes</a> (pide login)</p>
+</section>
+{% endblock %}

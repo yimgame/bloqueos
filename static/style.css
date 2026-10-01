@@ -476,3 +476,55 @@ th.th-sortable:hover { color: var(--text); }
 .gcg-estado-ok { background: #1e7d32; }
 .gcg-estado-vencido { background: var(--red); }
 .gcg-estado-na { background: #c7cbd1; color: var(--muted); }
+
+.tag-prio1 { background: var(--red); color: white; font-weight: 600; margin-left: 4px; }
+.checkbox-label { flex-direction: row !important; align-items: center; gap: 6px; }
+
+/* Página de confirmación de los botones del mail */
+.accion-mail { max-width: 720px; margin: 0 auto; }
+.accion-mail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0 0 14px; }
+.accion-mail dt { color: var(--muted); }
+.accion-mail dd { margin: 0; }
+.accion-mail textarea { width: 100%; min-height: 70px; font: inherit; padding: 6px; }
+.accion-mail .acciones { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.doc-critico td:first-child { font-weight: 600; }
+
+/* Estado del control GCG en la cabecera de Solicitudes */
+.chequeo-gcg {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px;
+  background: #f8f9fb; font-size: 12.5px; color: var(--muted); cursor: help;
+}
+.chequeo-titulo { font-weight: 600; color: var(--text); }
+.chequeo-dot { width: 9px; height: 9px; border-radius: 50%; background: #1e7d32; flex: none; }
+.chequeo-gcg.corriendo { border-color: #bfd3f5; background: #eef4ff; }
+.chequeo-gcg.corriendo .chequeo-dot { background: #1d4ed8; animation: chequeo-pulso 1s ease-in-out infinite; }
+.chequeo-gcg.corriendo .chequeo-estado { color: #1d4ed8; font-weight: 600; }
+@keyframes chequeo-pulso { 50% { opacity: .3; } }
+
+.modal-subtitle {
+  margin: 20px 0 4px;
+  font-size: 15px;
+}
+
+.modal-raw {
+  margin-top: 16px;
+}
+
+.modal-raw summary {
+  cursor: pointer;
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.modal-raw pre {
+  margin: 8px 0 0;
+  padding: 12px;
+  max-height: 360px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre;
+}

@@ -3,9 +3,11 @@
 controlados, y el historial de corridas (runs) con el detalle por chofer/documento."""
 import base64
 import hashlib
+import json
+import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 
 from werkzeug.security import generate_password_hash
 
@@ -50,7 +52,8 @@ CREATE TABLE IF NOT EXISTS documentos_control (
     nombre TEXT UNIQUE NOT NULL,
     activo INTEGER NOT NULL DEFAULT 1,
     orden INTEGER,
-    gcg_doc_numero INTEGER
+    gcg_doc_numero INTEGER,
+    paises TEXT NOT NULL DEFAULT 'AR'
 );
 
 CREATE TABLE IF NOT EXISTS gcg_catalogo_documentos (
@@ -84,6 +87,7 @@ CREATE TABLE IF NOT EXISTS choferes_docs (
     razon_social TEXT,
     jrt TEXT,
     mail_proveedor TEXT,
+    pais TEXT,
     documento TEXT,
     fecha_vencimiento TEXT,
     FOREIGN KEY(run_id) REFERENCES runs(id)
@@ -147,6 +151,23 @@ CREATE TABLE IF NOT EXISTS eventos_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_eventos_log_fecha ON eventos_log(fecha);
+
+-- En qué contratista (transporte) figuraba cada chofer cada vez que lo vimos: al
+-- subir un exportado, al consultar la API (solicitudes, buscador, barrido
+-- mensual). Sirve para saber por qué transportes pasó un chofer.
+CREATE TABLE IF NOT EXISTS chofer_contratista_hist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dni TEXT NOT NULL,
+    nombre TEXT,
+    pais TEXT,
+    situacion TEXT,
+    contratista TEXT,
+    contratista_cuit TEXT,
+    fuente TEXT NOT NULL,
+    fecha TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chofer_contratista_hist_dni ON chofer_contratista_hist(dni, fecha);
 """
 
 DEFAULT_CONFIG = {
@@ -169,6 +190,8 @@ DEFAULT_CONFIG = {
     ),
     "gcg_api_key": "",
     "estado_bloqueos_actualizado_en": "",
+    "app_url": "",
+    "mail_botones_admin": "0",
 }
 
 DOCUMENTOS_DEFAULT = [
@@ -239,6 +262,10 @@ GCG_CATALOGO_DEFAULT = {
     99: "Activo / inactivo",
 }
 
+# Países (código ISO, como viene en el campo "iso" de la API de GCG) a los que se
+# les controla un documento por defecto. Vacío = todos los países.
+PAISES_DEFAULT = "AR"
+
 USUARIOS_DEFAULT = [
     # (username, password_temporal, nombre_completo, jrt, rol)
     ("admin", "admin123", "Antonio Javier Cherin", None, "admin"),
@@ -270,8 +297,8 @@ def init_db():
         if existing == 0:
             for i, nombre in enumerate(DOCUMENTOS_DEFAULT):
                 conn.execute(
-                    "INSERT INTO documentos_control (nombre, activo, orden, gcg_doc_numero) VALUES (?, 1, ?, ?)",
-                    (nombre, i, DOCUMENTOS_GCG_NUMERO_DEFAULT.get(nombre)),
+                    "INSERT INTO documentos_control (nombre, activo, orden, gcg_doc_numero, paises) VALUES (?, 1, ?, ?, ?)",
+                    (nombre, i, DOCUMENTOS_GCG_NUMERO_DEFAULT.get(nombre), PAISES_DEFAULT),
                 )
         else:
             # Completa el número de GCG de los documentos por defecto que todavía no lo tengan
@@ -291,6 +318,7 @@ def init_db():
                        VALUES (?, ?, ?, ?, ?, 1, ?)""",
                     (username, generate_password_hash(pw), nombre, jrt, rol, ts),
                 )
+        _backfill_historial_contratista(conn)
         for numero, descripcion in GCG_CATALOGO_DEFAULT.items():
             conn.execute(
                 """INSERT INTO gcg_catalogo_documentos (numero, descripcion) VALUES (?, ?)
@@ -299,11 +327,96 @@ def init_db():
             )
 
 
+def observacion_desde_gcg(data, fuente, fecha=None):
+    """Arma una fila de chofer_contratista_hist a partir del JSON de la API de GCG
+    (None si la respuesta no trae un trabajador)."""
+    if not isinstance(data, dict) or not data.get("dni"):
+        return None
+    contratista = data.get("contratista") or {}
+    return {
+        "dni": str(data.get("dni")).strip(),
+        "nombre": f"{data.get('apellido') or ''}, {data.get('nombre') or ''}".strip(", ") or None,
+        "pais": data.get("iso"),
+        "contratista": contratista.get("nombre"),
+        "contratista_cuit": contratista.get("cuit"),
+        "fuente": fuente,
+        "fecha": fecha or now_iso(),
+    }
+
+
+def _backfill_historial_contratista(conn):
+    """La primera vez, carga el historial con lo que ya teníamos guardado: el JSON
+    de GCG de cada solicitud de desbloqueo."""
+    if conn.execute("SELECT 1 FROM chofer_contratista_hist LIMIT 1").fetchone():
+        return
+    rows = []
+    for r in conn.execute(
+        "SELECT gcg_json, COALESCE(gcg_consultado_en, fecha_solicitud) fecha FROM solicitudes_desbloqueo WHERE gcg_json IS NOT NULL"
+    ):
+        try:
+            obs = observacion_desde_gcg(json.loads(r["gcg_json"]), "solicitud", r["fecha"])
+        except (ValueError, TypeError):
+            obs = None
+        if obs:
+            rows.append(obs)
+    _insert_historial(conn, rows)
+
+
+def _insert_historial(conn, rows):
+    conn.executemany(
+        """INSERT INTO chofer_contratista_hist (dni, nombre, pais, situacion, contratista, contratista_cuit, fuente, fecha)
+           VALUES (:dni, :nombre, :pais, :situacion, :contratista, :contratista_cuit, :fuente, :fecha)""",
+        [{"nombre": None, "pais": None, "situacion": None, "contratista_cuit": None, **r} for r in rows],
+    )
+
+
+def insert_historial_contratista(rows):
+    with get_conn() as conn:
+        _insert_historial(conn, rows)
+
+
+def get_historial_contratista(dni=None):
+    """Observaciones ordenadas por DNI y fecha (de un DNI, o de todos)."""
+    with get_conn() as conn:
+        if dni:
+            q = conn.execute("SELECT * FROM chofer_contratista_hist WHERE dni = ? ORDER BY fecha, id", (dni,))
+        else:
+            q = conn.execute("SELECT * FROM chofer_contratista_hist ORDER BY dni, fecha, id")
+        return [dict(r) for r in q.fetchall()]
+
+
+def dnis_vistos_desde(fecha_iso):
+    """DNIs que figuraron en el historial desde esa fecha (para el barrido mensual)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT dni FROM chofer_contratista_hist WHERE fecha >= ? ORDER BY dni", (fecha_iso,)
+        ).fetchall()
+        return [r["dni"] for r in rows]
+
+
+def ultimo_contratista_por_dni():
+    """{dni: contratista} según la última vez que se vio a cada chofer."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT h.dni, h.contratista FROM chofer_contratista_hist h
+               JOIN (SELECT dni, MAX(id) id FROM chofer_contratista_hist GROUP BY dni) u ON u.id = h.id"""
+        ).fetchall()
+        return {r["dni"]: r["contratista"] for r in rows}
+
+
 def _migrar_columnas(conn):
     """Agrega columnas nuevas a tablas ya existentes (bases creadas antes de este cambio)."""
     cols_usuarios = {r["name"] for r in conn.execute("PRAGMA table_info(usuarios)")}
     if "mail" not in cols_usuarios:
         conn.execute("ALTER TABLE usuarios ADD COLUMN mail TEXT")
+    # Vacaciones de un JRT: quién lo cubre y entre qué fechas (ambas opcionales:
+    # sin "desde" rige ya, sin "hasta" rige hasta que se borre).
+    if "cubierto_por_id" not in cols_usuarios:
+        conn.execute("ALTER TABLE usuarios ADD COLUMN cubierto_por_id INTEGER")
+    if "ausencia_desde" not in cols_usuarios:
+        conn.execute("ALTER TABLE usuarios ADD COLUMN ausencia_desde TEXT")
+    if "ausencia_hasta" not in cols_usuarios:
+        conn.execute("ALTER TABLE usuarios ADD COLUMN ausencia_hasta TEXT")
 
     cols_solicitudes = {r["name"] for r in conn.execute("PRAGMA table_info(solicitudes_desbloqueo)")}
     if "origen" not in cols_solicitudes:
@@ -318,6 +431,18 @@ def _migrar_columnas(conn):
     cols_documentos = {r["name"] for r in conn.execute("PRAGMA table_info(documentos_control)")}
     if "gcg_doc_numero" not in cols_documentos:
         conn.execute("ALTER TABLE documentos_control ADD COLUMN gcg_doc_numero INTEGER")
+    # Países (ISO) a los que se les controla cada documento. Los choferes de otros
+    # países (ej. extranjeros de Bolivia/Paraguay) no se bloquean por ese documento.
+    if "paises" not in cols_documentos:
+        conn.execute(f"ALTER TABLE documentos_control ADD COLUMN paises TEXT NOT NULL DEFAULT '{PAISES_DEFAULT}'")
+
+    cols_hist = {r["name"] for r in conn.execute("PRAGMA table_info(chofer_contratista_hist)")}
+    if "situacion" not in cols_hist:
+        conn.execute("ALTER TABLE chofer_contratista_hist ADD COLUMN situacion TEXT")
+
+    cols_choferes_docs = {r["name"] for r in conn.execute("PRAGMA table_info(choferes_docs)")}
+    if "pais" not in cols_choferes_docs:
+        conn.execute("ALTER TABLE choferes_docs ADD COLUMN pais TEXT")
 
 
 def now_iso():
@@ -528,8 +653,8 @@ def add_documento(nombre):
     with get_conn() as conn:
         maxorden = conn.execute("SELECT COALESCE(MAX(orden), -1) m FROM documentos_control").fetchone()["m"]
         conn.execute(
-            "INSERT OR IGNORE INTO documentos_control (nombre, activo, orden) VALUES (?, 1, ?)",
-            (nombre.strip(), maxorden + 1),
+            "INSERT OR IGNORE INTO documentos_control (nombre, activo, orden, paises) VALUES (?, 1, ?, ?)",
+            (nombre.strip(), maxorden + 1, PAISES_DEFAULT),
         )
 
 
@@ -546,6 +671,33 @@ def rename_documento(doc_id, nombre):
 def set_documento_gcg_numero(doc_id, numero):
     with get_conn() as conn:
         conn.execute("UPDATE documentos_control SET gcg_doc_numero = ? WHERE id = ?", (numero, doc_id))
+
+
+def normalizar_paises(texto):
+    """'ar, py ' -> 'AR,PY' (sin repetidos, en el orden en que se cargaron)."""
+    codigos = []
+    for c in re.split(r"[\s,;]+", (texto or "").upper()):
+        if c and c not in codigos:
+            codigos.append(c)
+    return ",".join(codigos)
+
+
+def set_documento_paises(doc_id, texto):
+    paises = normalizar_paises(texto)
+    with get_conn() as conn:
+        conn.execute("UPDATE documentos_control SET paises = ? WHERE id = ?", (paises, doc_id))
+    return paises
+
+
+def documento_aplica_a_pais(doc, iso):
+    """True si el documento se le controla a un chofer de ese país (ISO). Sin
+    países cargados en el documento aplica a todos; sin país conocido del chofer
+    (corridas viejas, o país que no se pudo identificar) se controla igual, para
+    no dejar pasar a nadie por falta de dato."""
+    paises = normalizar_paises(doc.get("paises"))
+    if not paises or not iso:
+        return True
+    return iso.upper() in paises.split(",")
 
 
 def counts():
@@ -572,9 +724,9 @@ def insert_choferes_docs(run_id, rows):
         conn.executemany(
             """INSERT INTO choferes_docs
                (run_id, dni, nombre, condicion, nro_proveedor, razon_social, jrt,
-                mail_proveedor, documento, fecha_vencimiento)
+                mail_proveedor, pais, documento, fecha_vencimiento)
                VALUES (:run_id, :dni, :nombre, :condicion, :nro_proveedor, :razon_social, :jrt,
-                       :mail_proveedor, :documento, :fecha_vencimiento)""",
+                       :mail_proveedor, :pais, :documento, :fecha_vencimiento)""",
             [{**r, "run_id": run_id} for r in rows],
         )
 
@@ -653,6 +805,63 @@ def get_usuario_by_jrt(jrt):
         return dict(row) if row else None
 
 
+def get_reemplazo_vigente(titular):
+    """El usuario que cubre a este JRT hoy (vacaciones), o None si no hay
+    reemplazo cargado, está fuera de fechas o ya no está activo."""
+    if not titular or not titular.get("cubierto_por_id"):
+        return None
+    hoy = date.today().isoformat()
+    if titular.get("ausencia_desde") and hoy < titular["ausencia_desde"]:
+        return None
+    if titular.get("ausencia_hasta") and hoy > titular["ausencia_hasta"]:
+        return None
+    reemplazo = get_usuario(titular["cubierto_por_id"])
+    if not reemplazo or not reemplazo["activo"]:
+        return None
+    return reemplazo
+
+
+def set_usuario_reemplazo(user_id, cubierto_por_id, desde, hasta):
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE usuarios SET cubierto_por_id = ?, ausencia_desde = ?, ausencia_hasta = ?
+               WHERE id = ?""",
+            (cubierto_por_id or None, desde or None, hasta or None, user_id),
+        )
+
+
+def es_responsable_jrt(user, solicitud):
+    """True si el usuario es el JRT titular del chofer de esta solicitud o quien
+    lo cubre hoy por vacaciones."""
+    if not user or not solicitud:
+        return False
+    titular = get_usuario_by_jrt(solicitud.get("jrt"))
+    if not titular:
+        return False
+    if titular["id"] == user["id"]:
+        return True
+    reemplazo = get_reemplazo_vigente(titular)
+    return bool(reemplazo and reemplazo["id"] == user["id"])
+
+
+def get_admins():
+    """Administradores activos con mail cargado."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM usuarios WHERE rol = 'admin' AND activo = 1 AND mail IS NOT NULL AND mail != ''"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_estado_bloqueo(dni):
+    """{tipo, descripcion, actualizado_en} de la foto real de bloqueos para ese DNI, o None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT tipo, descripcion, actualizado_en FROM estado_bloqueos WHERE dni = ?", (dni,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_mails_admin(excluir_mail=None):
     """Mails de todos los administradores activos con mail cargado."""
     with get_conn() as conn:
@@ -703,7 +912,15 @@ def set_usuario_password(user_id, password):
 
 def crear_solicitud(row):
     row = {"origen": "manual", "gcg_json": None, "gcg_consultado_en": None, "gcg_error": None, **row}
+    obs = None
+    if row["gcg_json"]:
+        try:
+            obs = observacion_desde_gcg(json.loads(row["gcg_json"]), "solicitud", row["gcg_consultado_en"])
+        except (ValueError, TypeError):
+            obs = None
     with get_conn() as conn:
+        if obs:
+            _insert_historial(conn, [obs])
         cur = conn.execute(
             """INSERT INTO solicitudes_desbloqueo
                (run_id, dni, nombre, jrt, nro_proveedor, razon_social, documentos,
@@ -719,7 +936,7 @@ def crear_solicitud(row):
 
 def solicitud_pendiente_existente(dni):
     """Una solicitud queda "abierta" para un DNI mientras no se ejecutó (liberó en
-    GCG) ni se rechazó, sin importar de qué corrida haya salido: el chofer se
+    JDE) ni se rechazó, sin importar de qué corrida haya salido: el chofer se
     puede bloquear y liberar en cualquier momento, no atado a una corrida
     puntual. Lo que no puede pasar es tener dos solicitudes abiertas juntas."""
     with get_conn() as conn:
@@ -766,9 +983,28 @@ def solicitud_ejecutada_sin_refrescar(dni, desde):
         return row is not None
 
 
+# Orígenes en los que una persona decidió el desbloqueo (el JRT/admin la pidió
+# directo, o la autorizó a mano): al quedar autorizadas son prioridad 1 para
+# liberar, por encima de las que se aprobaron solas (GCG / críticos verdes).
+ORIGENES_HUMANOS = ("manual", "jrt_auto", "admin_auto")
+
+
 def list_solicitudes():
+    """Primero las autorizadas prioridad 1, después las autorizadas automáticas,
+    después las pendientes de autorizar y al final las cerradas; dentro de cada
+    grupo, las más nuevas arriba."""
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM solicitudes_desbloqueo ORDER BY id DESC").fetchall()
+        rows = conn.execute(
+            f"""SELECT *,
+                   CASE WHEN estado = 'autorizado' AND origen IN {ORIGENES_HUMANOS} THEN 1 ELSE 0 END AS prio1
+                FROM solicitudes_desbloqueo
+                ORDER BY CASE
+                    WHEN estado = 'autorizado' AND origen IN {ORIGENES_HUMANOS} THEN 0
+                    WHEN estado = 'autorizado' THEN 1
+                    WHEN estado = 'solicitado' THEN 2
+                    ELSE 3 END,
+                  id DESC"""
+        ).fetchall()
         return [dict(r) for r in rows]
 
 

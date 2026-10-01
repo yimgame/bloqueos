@@ -127,4 +127,30 @@
 </section>
 {% endif %}
 
+{% if transportes %}
+<section class="panel">
+  <h2>Transportes por los que pasó</h2>
+  <p class="muted">Según cada vez que lo vimos: exportados de GCG subidos, solicitudes de desbloqueo, el barrido
+     mensual y este buscador. El más reciente arriba.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Contratista</th><th>CUIT</th><th>Situación</th><th>Desde</th><th>Hasta</th><th>Veces visto</th><th>Fuentes</th></tr></thead>
+    <tbody>
+      {% for p in transportes %}
+      <tr>
+        <td>{{ p.contratista }}{% if p.actual %} <span class="tag">actual</span>{% endif %}</td>
+        <td>{{ p.cuit or '—' }}</td>
+        <td>{{ p.situacion or '—' }}</td>
+        <td>{{ p.desde|fecha }}</td>
+        <td>{{ p.hasta|fecha }}</td>
+        <td>{{ p.veces }}</td>
+        <td class="small">{{ p.fuentes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
 {% endblock %}

@@ -221,6 +221,48 @@ def buscar_proveedor_por_dni(dni):
 
 # ---------------------------------------------------------------------------
 
+# Nombre de país tal como viene en la columna "País" del exportado de GCG -> código
+# ISO (el mismo que devuelve la API en el campo "iso"). Claves normalizadas con _norm.
+PAIS_A_ISO = {
+    "argentina": "AR",
+    "bolivia": "BO",
+    "brasil": "BR",
+    "brazil": "BR",
+    "chile": "CL",
+    "paraguay": "PY",
+    "uruguay": "UY",
+    "peru": "PE",
+}
+
+
+def _texto(v):
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip() or None
+
+
+def pais_a_iso(valor):
+    """'Bolivia' -> 'BO'. Si ya viene como código de 2 letras se respeta; si es un
+    país que no está en el mapeo devuelve None (se le controla todo, ver
+    db.documento_aplica_a_pais)."""
+    if valor is None:
+        return None
+    try:
+        if pd.isna(valor):
+            return None
+    except (TypeError, ValueError):
+        pass
+    texto = str(valor).strip()
+    if len(texto) == 2 and texto.isalpha():
+        return texto.upper()
+    return PAIS_A_ISO.get(_norm(texto))
+
+
 EXCLUIR_CONDICION_KEYWORDS = ["extranjero"]
 EXCLUIR_MATRIZ_KEYWORDS = ["independiente"]
 
@@ -235,6 +277,8 @@ def procesar_gcg_export(file_like, archivo_origen):
     col_condicion = _find_col(cols, ("condicion", "trabajador"))
     col_matriz = _find_col(cols, ("matriz", "documentos"))
     col_pais = _find_col(cols, ("pais",))
+    col_contratista = next((c for c in cols if _norm(c) == "contratista"), None)
+    col_situacion = next((c for c in cols if _norm(c) == "situacion"), None)
 
     if col_dni is None:
         raise ValueError("No se encontró la columna 'DNI' en el exportado de GCG.")
@@ -242,6 +286,35 @@ def procesar_gcg_export(file_like, archivo_origen):
     # sólo Trabajador si la columna existe (algunos exportados no la traen)
     if col_tipo:
         df = df[df[col_tipo].astype(str).str.strip().str.lower() == "trabajador"]
+
+    # Historial de transportes: se registra a todos los trabajadores del exportado
+    # (también inactivos, dados de baja, extranjeros e independientes, que después
+    # se excluyen del control).
+    if col_contratista:
+        fecha_obs = db.now_iso()
+        db.insert_historial_contratista([
+            {
+                "dni": dni,
+                "nombre": _texto(r.get(col_nombre)) if col_nombre else None,
+                "pais": pais_a_iso(r.get(col_pais)) if col_pais else None,
+                "situacion": _texto(r.get(col_situacion)) if col_situacion else None,
+                "contratista": _texto(r.get(col_contratista)),
+                "fuente": "exportado",
+                "fecha": fecha_obs,
+            }
+            for _, r in df.iterrows()
+            for dni in [_only_digits(r.get(col_dni))]
+            if dni
+        ])
+
+    # El exportado puede traer también a los dados de baja (ya no trabajan más:
+    # sirven sólo para el historial de transportes). Al control de bloqueos entran
+    # los activos y los inactivos (no viajan hace unos meses, pero siguen estando).
+    total_bajas = 0
+    if col_situacion:
+        de_baja = df[col_situacion].astype(str).map(_norm).str.contains("baja", na=False)
+        total_bajas = int(de_baja.sum())
+        df = df[~de_baja]
 
     total_evaluados_inicial = len(df)
 
@@ -285,6 +358,7 @@ def procesar_gcg_export(file_like, archivo_origen):
             total_sin_proveedor += 1
         nombre = r.get(col_nombre) if col_nombre else None
         condicion = r.get(col_condicion) if col_condicion else None
+        pais = pais_a_iso(r.get(col_pais)) if col_pais else None
 
         for doc_nombre, doc_col in doc_cols.items():
             fecha_val = r.get(doc_col) if doc_col else None
@@ -297,6 +371,7 @@ def procesar_gcg_export(file_like, archivo_origen):
                 "razon_social": prov["razon_social"] if prov else None,
                 "jrt": prov["jrt"] if prov else None,
                 "mail_proveedor": prov["mail"] if prov else None,
+                "pais": pais,
                 "documento": doc_nombre,
                 "fecha_vencimiento": fecha.isoformat() if fecha else None,
             })
@@ -317,6 +392,7 @@ def procesar_gcg_export(file_like, archivo_origen):
         "total_evaluados": total_evaluados_inicial,
         "total_excluidos": total_excluidos,
         "total_sin_proveedor": total_sin_proveedor,
+        "total_bajas": total_bajas,
         "missing_doc_cols": missing_doc_cols,
     }
 
@@ -330,11 +406,19 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
     rows = db.get_choferes_docs(run_id)
     estado_bloqueos_map = db.get_estado_bloqueos_map()
     estado_bloqueos_en = db.get_config().get("estado_bloqueos_actualizado_en") or None
+    # Cada documento se controla sólo para los países configurados (ej. sólo AR:
+    # a los choferes extranjeros no se los bloquea por ese documento). Se filtra
+    # acá y no al procesar, para que un cambio de configuración aplique sin
+    # reprocesar la corrida.
+    docs_config = {d["nombre"]: d for d in db.get_documentos_control()}
 
     por_chofer = {}
     for r in rows:
         jrt_label = (r["jrt"] or "").strip() or SIN_JRT_LABEL
         if jrt_filtro is not None and jrt_label not in jrt_filtro:
+            continue
+        doc_config = docs_config.get(r["documento"])
+        if doc_config and not db.documento_aplica_a_pais(doc_config, r.get("pais")):
             continue
         key = r["dni"]
         jd_info = estado_bloqueos_map.get(key)
@@ -342,6 +426,7 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
             "dni": r["dni"],
             "nombre": r["nombre"],
             "condicion": r["condicion"],
+            "pais": r.get("pais"),
             "nro_proveedor": r["nro_proveedor"],
             "razon_social": r["razon_social"],
             "jrt": jrt_label,
@@ -563,6 +648,144 @@ def exportar_excel(lista):
 
 
 # ---------------------------------------------------------------------------
+# Historial de transportes (en qué contratista trabajó cada chofer)
+# ---------------------------------------------------------------------------
+
+FUENTE_HIST_LABELS = {
+    "exportado": "Exportado GCG",
+    "mapeo_mensual": "Barrido mensual API",
+    "solicitud": "Solicitud de desbloqueo",
+    "consulta": "Buscador GCG",
+}
+
+
+def periodos_contratista(observaciones):
+    """Períodos de UN chofer en cada contratista, a partir de sus observaciones
+    ordenadas por fecha: [{contratista, cuit, desde, hasta, veces, fuentes,
+    actual}], ordenados por "desde".
+
+    Cada "foto" (mismo momento y fuente) puede traer más de un contratista: en el
+    exportado un chofer puede figurar en dos transportes a la vez, y eso no es un
+    cambio. Un período sigue abierto mientras el contratista aparezca; lo cierra
+    una foto del exportado en la que ya no figura, o una de la API (que trae un
+    solo contratista) si el chofer estaba en un único transporte."""
+    fotos = []
+    for o in observaciones:
+        if fotos and fotos[-1]["fecha"] == o["fecha"] and fotos[-1]["fuente"] == o["fuente"]:
+            fotos[-1]["obs"].append(o)
+        else:
+            fotos.append({"fecha": o["fecha"], "fuente": o["fuente"], "obs": [o]})
+
+    periodos = []
+    abiertos = {}  # clave -> período
+    for foto in fotos:
+        claves_foto = {}
+        for o in foto["obs"]:
+            claves_foto.setdefault(_norm(o["contratista"]) or "(sin contratista)", o)
+        cierra = foto["fuente"] == "exportado" or len(abiertos) <= 1
+        if cierra:
+            for clave in [c for c in abiertos if c not in claves_foto]:
+                del abiertos[clave]
+        fuente_label = FUENTE_HIST_LABELS.get(foto["fuente"], foto["fuente"])
+        for clave, o in claves_foto.items():
+            p = abiertos.get(clave)
+            if p is None:
+                p = {
+                    "_clave": clave,
+                    "contratista": o["contratista"] or "(sin contratista)",
+                    "cuit": None,
+                    "desde": foto["fecha"],
+                    "hasta": foto["fecha"],
+                    "veces": 0,
+                    "fuentes": set(),
+                    "situacion": None,
+                }
+                periodos.append(p)
+                abiertos[clave] = p
+            p["hasta"] = foto["fecha"]
+            p["veces"] += 1
+            p["cuit"] = p["cuit"] or o.get("contratista_cuit")
+            p["situacion"] = o.get("situacion") or p["situacion"]
+            p["fuentes"].add(fuente_label)
+
+    for p in periodos:
+        p["actual"] = abiertos.get(p["_clave"]) is p
+        p["fuentes"] = ", ".join(sorted(p["fuentes"]))
+    periodos.sort(key=lambda p: (p["desde"], p["contratista"]))
+    return periodos
+
+
+def _ancho_columnas(ws, df):
+    for col_idx, nombre_col in enumerate(df.columns, start=1):
+        largo = df[nombre_col].map(lambda v: len(str(v)) if v is not None and v == v else 0).max() if len(df) else 0
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max(len(str(nombre_col)), 10, largo) + 2, 50)
+
+
+def exportar_excel_transportes():
+    """Excel con tres hojas: dónde figura hoy cada chofer, quiénes cambiaron de
+    transporte, y el historial completo por períodos."""
+    from openpyxl.styles import Font
+
+    por_dni = {}
+    for o in db.get_historial_contratista():
+        por_dni.setdefault(o["dni"], []).append(o)
+
+    actual, cambios, historial = [], [], []
+    for dni, obs in por_dni.items():
+        nombre = next((o["nombre"] for o in reversed(obs) if o["nombre"]), None)
+        pais = next((o["pais"] for o in reversed(obs) if o["pais"]), None)
+        periodos = periodos_contratista(obs)
+        vigentes = [p for p in periodos if p["actual"]]
+        cerrados = [p for p in periodos if not p["actual"]]
+        actual.append({
+            "Chofer": nombre, "DNI": dni, "País": pais,
+            "Contratista actual": " / ".join(p["contratista"] for p in vigentes),
+            "Situación": " / ".join(p["situacion"] or "—" for p in vigentes),
+            "CUIT contratista": " / ".join(p["cuit"] for p in vigentes if p["cuit"]),
+            "En este transporte desde": db.fmt_fecha(min(p["desde"] for p in vigentes)) if vigentes else "",
+            "Visto por última vez": db.fmt_fecha(obs[-1]["fecha"]),
+            "Transportes distintos": len({p["_clave"] for p in periodos}),
+        })
+        if cerrados:
+            anterior = max(cerrados, key=lambda p: p["hasta"])
+            cambios.append({
+                "Chofer": nombre, "DNI": dni, "País": pais,
+                "Transporte anterior": anterior["contratista"],
+                "Visto ahí hasta": db.fmt_fecha(anterior["hasta"]),
+                "Transporte actual": " / ".join(p["contratista"] for p in vigentes),
+                "Visto ahí desde": db.fmt_fecha(min(p["desde"] for p in vigentes)) if vigentes else "",
+                "Cambios": len(cerrados),
+            })
+        for p in periodos:
+            historial.append({
+                "Chofer": nombre, "DNI": dni, "Contratista": p["contratista"], "CUIT contratista": p["cuit"],
+                "Desde": db.fmt_fecha(p["desde"]), "Hasta": db.fmt_fecha(p["hasta"]),
+                "Actual": "Sí" if p["actual"] else "No",
+                "Situación": p["situacion"],
+                "Veces visto": p["veces"], "Fuentes": p["fuentes"],
+            })
+
+    hojas = (
+        ("Donde trabaja hoy", sorted(actual, key=lambda f: ((f["Contratista actual"] or ""), f["Chofer"] or ""))),
+        ("Cambios de transporte", sorted(cambios, key=lambda f: (f["Chofer"] or ""))),
+        ("Historial completo", historial),
+    )
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for nombre_hoja, filas in hojas:
+            df = pd.DataFrame(filas)
+            if df.empty:
+                df = pd.DataFrame({"Sin datos": []})
+            df.to_excel(writer, index=False, sheet_name=nombre_hoja)
+            ws = writer.sheets[nombre_hoja]
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+            _ancho_columnas(ws, df)
+    buf.seek(0)
+    return buf
+
+
+# ---------------------------------------------------------------------------
 # Exportar solicitudes de desbloqueo (auditoría)
 # ---------------------------------------------------------------------------
 
@@ -650,7 +873,11 @@ def exportar_excel_solicitudes(solicitudes):
             # Foto real controlada por API al momento de esta solicitud puntual.
             for doc_nombre in documentos_activos:
                 d = docs_gcg.get(doc_nombre)
-                if d and d["encontrado"]:
+                if d is None:
+                    # No se le controla a un chofer de ese país.
+                    fila[doc_nombre] = "no aplica"
+                    fila_estados_doc.append(None)
+                elif d["encontrado"]:
                     fila[doc_nombre] = d["fecha"] or "sin dato"
                     fila_estados_doc.append("vigente" if d["estado"] else "vencido")
                 else:

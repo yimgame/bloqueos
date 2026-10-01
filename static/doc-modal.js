@@ -22,6 +22,47 @@
     return '<span class="gcg-estado-icon gcg-estado-na" title="Sin dato">—</span>';
   }
 
+  function filasDocumentos(documentos, formatearFecha) {
+    if (!documentos.length) {
+      return '<tr><td colspan="3" class="muted">No hay documentos para mostrar.</td></tr>';
+    }
+    return documentos
+      .map(function (d) {
+        return (
+          "<tr><td>" + escapeHtml(d.nombre) + "</td>" +
+          "<td>" + escapeHtml(formatearFecha(d) || "—") + "</td>" +
+          "<td>" + iconoEstado(d.estado) + "</td></tr>"
+        );
+      })
+      .join("");
+  }
+
+  function mostrarExtrasGcg(raw) {
+    var bloqueContratista = document.getElementById("doc-modal-contratista");
+    var bloqueRaw = document.getElementById("doc-modal-raw");
+    if (!bloqueContratista || !bloqueRaw) return;
+
+    var contratista = raw && raw.contratista;
+    bloqueContratista.hidden = !contratista;
+    if (contratista) {
+      document.getElementById("doc-modal-contratista-title").textContent =
+        "Contratista: " + [contratista.nombre, contratista.cuit ? "CUIT " + contratista.cuit : null].filter(Boolean).join(" · ");
+      document.getElementById("doc-modal-contratista-meta").textContent = [
+        contratista.iso ? "País: " + contratista.iso : null,
+        contratista.estadoHabilitacion ? "Habilitación: " + contratista.estadoHabilitacion : null,
+        contratista.fechaVto ? "Vto: " + String(contratista.fechaVto).replace(/-/g, "/") : null,
+      ].filter(Boolean).join(" · ");
+      document.getElementById("doc-modal-contratista-body").innerHTML = filasDocumentos(
+        contratista.documentos || [],
+        function (d) { return d.fechaVto ? String(d.fechaVto).replace(/-/g, "/") : null; }
+      );
+    }
+
+    bloqueRaw.hidden = !raw;
+    bloqueRaw.open = false;
+    document.getElementById("doc-modal-raw-pre").textContent = raw ? JSON.stringify(raw, null, 2) : "";
+  }
+
   function abrirModal(payload, fallback) {
     var modal = document.getElementById("doc-modal");
     var titulo = document.getElementById("doc-modal-title");
@@ -36,24 +77,15 @@
     titulo.textContent = [nombre, dni ? "DNI " + dni : null].filter(Boolean).join(" · ") || "Documentos en GCG";
 
     var metaTxt = [];
+    var raw = payload.raw;
     if (payload.consultado_en) metaTxt.push("Consultado en GCG: " + formatearFechaHora(payload.consultado_en));
+    if (raw && raw.iso) metaTxt.push("País: " + raw.iso);
+    if (raw && raw.estadoHabilitacionFinal) metaTxt.push("Habilitación final: " + raw.estadoHabilitacionFinal);
     if (payload.error) metaTxt.push("Error al consultar GCG: " + payload.error);
     meta.textContent = metaTxt.join(" · ") || "Sin datos de consulta a GCG para esta solicitud.";
 
-    var documentos = payload.documentos || [];
-    if (!documentos.length) {
-      tbody.innerHTML = '<tr><td colspan="3" class="muted">No hay documentos para mostrar.</td></tr>';
-    } else {
-      tbody.innerHTML = documentos
-        .map(function (d) {
-          return (
-            "<tr><td>" + escapeHtml(d.nombre) + "</td>" +
-            "<td>" + escapeHtml(d.fecha || "—") + "</td>" +
-            "<td>" + iconoEstado(d.estado) + "</td></tr>"
-          );
-        })
-        .join("");
-    }
+    tbody.innerHTML = filasDocumentos(payload.documentos || [], function (d) { return d.fecha; });
+    mostrarExtrasGcg(raw);
     modal.hidden = false;
   }
 
@@ -70,7 +102,7 @@
     // No interferir con los botones de Autorizar/Rechazar/Ejecutar ni con
     // los filtros/orden de la tabla: sólo abre el modal si el click cayó
     // fuera de cualquier elemento interactivo propio.
-    if (e.target.closest("button, a, input, textarea, select, form")) return;
+    if (e.target.closest("button, a, input, textarea, select, form, details")) return;
 
     var fila = e.target.closest("tr[data-doc-target]");
     if (!fila) return;
