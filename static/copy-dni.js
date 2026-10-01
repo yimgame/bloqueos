@@ -28,6 +28,10 @@
     var valor = boton.getAttribute("data-copy") || boton.textContent.trim();
     if (!valor) return;
     copiar(valor).then(function () {
+      document.querySelectorAll(".dni-copy.ultimo-copiado").forEach(function (b) {
+        b.classList.remove("ultimo-copiado");
+      });
+      boton.classList.add("ultimo-copiado");
       boton.classList.add("copiado");
       clearTimeout(boton._copyTimeout);
       boton._copyTimeout = setTimeout(function () {

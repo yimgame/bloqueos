@@ -252,19 +252,46 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: upp
   font: inherit;
   cursor: pointer;
   border-bottom: 1px dashed transparent;
+  /* El ícono/feedback va en absoluto para no cambiar el ancho de la celda
+     (si no, la tabla se reacomoda al pasar el mouse). */
+  position: relative;
 }
 .dni-copy:hover, .dni-copy:focus-visible { border-bottom-color: var(--muted); }
 .dni-copy:hover::after, .dni-copy:focus-visible::after {
   content: "⧉";
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
   margin-left: 4px;
   font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
 }
 .dni-copy.copiado::after {
   content: "✓ copiado" !important;
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
   margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .15);
   font-size: 11px;
   color: #1e7d32;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1;
+}
+/* Último DNI copiado: queda resaltado hasta que se copie otro. */
+.dni-copy.ultimo-copiado {
+  background: #e3f2e5;
+  color: #1e5e24;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px #e3f2e5;
 }
 
 .tag {
