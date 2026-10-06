@@ -33,16 +33,23 @@
   <p class="muted">
     {{ proveedor.razon_social if proveedor else 'Sin proveedor cargado en el maestro' }}
     {% if proveedor and proveedor.jrt %} · JRT {{ proveedor.jrt }}{% endif %}
-    · Habilitación general en GCG: {{ 'habilitado' if trabajador.habilitado_gcg else 'no habilitado' }}
-    (puede diferir de nuestro criterio: acá sólo miramos los documentos críticos que controlamos)
+    · Habilitación del chofer en GCG: {{ 'habilitado' if trabajador.habilitado_gcg else 'no habilitado' }}
+    {% if trabajador.habilitado_gcg and not trabajador.habilitado_final_gcg %}(la habilitación final figura inhabilitada por la empresa contratista){% endif %}
+    (si está habilitado, los críticos que no figuran en GCG no bloquean; los vencidos sí)
   </p>
 
   {% if todos_verdes %}
-    <p class="flash flash-ok">Todos los documentos críticos que controlamos figuran vigentes en GCG. Se puede liberar.</p>
+    <p class="flash flash-ok">
+      {% if criticos|selectattr('ok_por_habilitado')|list %}
+        Los documentos críticos que figuran están vigentes y los que no figuran se aceptan porque GCG lo da por habilitado. Se puede liberar.
+      {% else %}
+        Todos los documentos críticos que controlamos figuran vigentes en GCG. Se puede liberar.
+      {% endif %}
+    </p>
   {% else %}
     <p class="flash flash-error">
       Todavía falta:
-      {{ criticos|selectattr('estado', 'equalto', false)|map(attribute='nombre')|join(', ') }}
+      {{ faltantes|map(attribute='nombre')|join(', ') }}
     </p>
   {% endif %}
 
@@ -60,6 +67,8 @@
             <span class="doc-chip doc-chip-vigente">vigente</span>
           {% elif d.estado is sameas false %}
             <span class="doc-chip doc-chip-vencido">vencido</span>
+          {% elif d.ok_por_habilitado %}
+            <span class="doc-chip doc-chip-vigente">no figura · GCG habilitado</span>
           {% else %}
             <span class="doc-chip doc-chip-sin_dato">no encontrado en GCG</span>
           {% endif %}

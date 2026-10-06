@@ -374,7 +374,8 @@ def _ejecutar_chequeo_gcg():
             })
             db.autorizar_solicitud(
                 solicitud_id, None, actor,
-                comentario="Todos los documentos críticos figuran vigentes en la consulta a GCG.",
+                comentario="Todos los documentos críticos figuran vigentes en la consulta a GCG "
+                           "(los que no figuran se aceptan porque GCG lo da por habilitado).",
             )
             db.log_evento("solicitud", f"Desbloqueo auto-generado por GCG para {c['nombre']} (DNI {c['dni']})")
             _notificar_solicitud(solicitud_id)
@@ -812,14 +813,18 @@ def gcg_consultar():
                 db.insert_historial_contratista([obs])
             documentos_activos = db.get_documentos_control(solo_activos=True)
             criticos = gcg_api.evaluar_criticos(data, documentos_activos)
-            todos_verdes = bool(criticos) and all(d["estado"] for d in criticos)
+            habilitado = gcg_api.habilitado_gcg(data)
+            for d in criticos:
+                d["ok_por_habilitado"] = not d["estado"] and bool(gcg_api.critico_ok(d, habilitado))
+            faltan = gcg_api.faltantes(data, criticos)
+            todos_verdes = bool(criticos) and not faltan
             catalogo = db.get_catalogo_documentos()
             proveedor = pipeline.buscar_proveedor_por_dni(dni)
             run = db.get_last_run()
             solicitud_activa = db.solicitud_pendiente_existente(dni)
 
             documentos_txt = "; ".join(
-                f"{d['nombre']}: {'OK' if d['estado'] else ('VENCIDO' if d['encontrado'] else 'no encontrado en GCG')}"
+                f"{d['nombre']}: {'OK' if d['estado'] else ('VENCIDO' if d['encontrado'] else ('no encontrado en GCG (GCG habilitado)' if d['ok_por_habilitado'] else 'no encontrado en GCG'))}"
                 + (f" (vto {d['fecha']})" if d["fecha"] else "")
                 for d in criticos
             )
@@ -828,9 +833,11 @@ def gcg_consultar():
                 "trabajador": {
                     "nombre": f"{data.get('apellido', '')}, {data.get('nombre', '')}".strip(", "),
                     "dni": data.get("dni") or dni,
-                    "habilitado_gcg": data.get("habilitado"),
+                    "habilitado_gcg": gcg_api.habilitado_gcg(data),
+                    "habilitado_final_gcg": data.get("habilitado"),
                 },
                 "criticos": criticos,
+                "faltantes": faltan,
                 "todos_verdes": todos_verdes,
                 "documentos_todos": gcg_api.listar_todos_los_documentos(data, catalogo),
                 "proveedor": proveedor,
@@ -919,7 +926,7 @@ def solicitar_desbloqueo():
 
     if auto_aprueba:
         if origen == "criticos_verdes":
-            comentario = "Todos los documentos críticos figuran vigentes en la consulta a GCG al momento de la solicitud."
+            comentario = "Todos los documentos críticos figuran vigentes en la consulta a GCG al momento de la solicitud (los que no figuran se aceptan porque GCG lo da por habilitado)."
         else:
             comentario = f"Auto-aprobado: lo pidió {user['rol']}, no importa cómo estén los documentos."
         db.autorizar_solicitud(

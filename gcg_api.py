@@ -103,16 +103,44 @@ def evaluar_criticos(data, documentos_control):
     return detalle
 
 
+def habilitado_gcg(data):
+    """El "verde" de GCG para el trabajador en sí (campo "estadoHabilitacion").
+    No se usa "habilitado", que es la habilitación final y también se cae si la
+    empresa contratista tiene algo vencido (ej. Inscripción en ARCA)."""
+    return str(data.get("estadoHabilitacion") or "").strip().lower() == "habilitado"
+
+
+def critico_ok(d, habilitado):
+    """Un crítico (ver evaluar_criticos) está OK si figura vigente, o si no
+    figura en GCG pero GCG lo da por habilitado en general (si GCG no se lo
+    pide, no lo bloqueamos por eso). Un vencido nunca está OK, y uno sin Nº GCG
+    mapeado tampoco (ni se llegó a mirar)."""
+    if d["estado"]:
+        return True
+    return habilitado and d["numero"] and not d["encontrado"]
+
+
+def faltantes(data, criticos):
+    """Los críticos que impiden liberar (ver critico_ok)."""
+    habilitado = habilitado_gcg(data)
+    return [d for d in criticos if not critico_ok(d, habilitado)]
+
+
 def documentos_criticos_verdes(data, numeros_documentos_criticos):
     """True si TODOS los documentos críticos (identificados por su número de GCG)
-    aparecen en la respuesta con estado=true (no vencido). Si falta alguno o
-    figura vencido, False."""
+    aparecen en la respuesta con estado=true (no vencido). Uno que no aparece
+    se acepta sólo si GCG da al trabajador por habilitado en general. Si alguno
+    figura vencido, o falta y GCG no lo habilita, False."""
     if not numeros_documentos_criticos:
         return False
     docs_api = _docs_por_numero(data)
+    habilitado = habilitado_gcg(data)
     for numero in numeros_documentos_criticos:
         d = docs_api.get(str(int(numero)))
-        if not d or not d.get("estado"):
+        if d is None:
+            if not habilitado:
+                return False
+        elif not d.get("estado"):
             return False
     return True
 
