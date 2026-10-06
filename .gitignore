@@ -15,3 +15,6 @@ gcg/*.pdf
 # Carpeta de trabajo para archivos que no van al repo
 ignore/
 Nueva carpeta/
+
+# Accesos directos de Windows
+*.lnk
