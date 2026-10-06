@@ -5,7 +5,7 @@
   {% set found = docs | selectattr('documento', 'equalto', nombre) | list %}
   {% if found %}
     {% set d = found[0] %}
-    <span class="doc-chip doc-chip-{{ d.estado }}">{{ (d.fecha|fecha) if d.fecha else 'sin dato' }}</span>
+    <span class="doc-chip doc-chip-{{ d.estado }}"{% if d.estado == 'no_requerido' %} title="Fecha vieja de un documento que GCG ya no le pide (figura HABILITADO en GCG): no bloquea"{% endif %}>{{ (d.fecha|fecha) if d.fecha else 'sin dato' }}</span>
   {% else %}
     <span class="muted">—</span>
   {% endif %}
@@ -131,7 +131,7 @@
         <tbody>
           {% for c in resultado.vencidos %}
           <tr>
-            <td>{{ c.nombre }}</td>
+            <td>{{ c.nombre }}{% if c.baja_gcg %} <span class="tag tag-baja" title="Dado de baja en GCG: se mantiene bloqueado aunque tenga los documentos al día">Baja GCG</span>{% endif %}</td>
             <td><button type="button" class="dni-copy" data-copy="{{ c.dni }}" title="Copiar DNI">{{ c.dni }}</button></td>
             <td>{{ c.jrt }}</td>
             <td>{{ c.razon_social or '—' }}{% if c.sin_proveedor %} <span class="tag">sin proveedor</span>{% endif %}</td>

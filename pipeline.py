@@ -279,6 +279,7 @@ def procesar_gcg_export(file_like, archivo_origen):
     col_pais = _find_col(cols, ("pais",))
     col_contratista = next((c for c in cols if _norm(c) == "contratista"), None)
     col_situacion = next((c for c in cols if _norm(c) == "situacion"), None)
+    col_estado = next((c for c in cols if _norm(c) == "estado"), None)
 
     if col_dni is None:
         raise ValueError("No se encontró la columna 'DNI' en el exportado de GCG.")
@@ -307,14 +308,12 @@ def procesar_gcg_export(file_like, archivo_origen):
             if dni
         ])
 
-    # El exportado puede traer también a los dados de baja (ya no trabajan más:
-    # sirven sólo para el historial de transportes). Al control de bloqueos entran
-    # los activos y los inactivos (no viajan hace unos meses, pero siguen estando).
+    # El exportado puede traer también a los dados de baja (ya no trabajan más).
+    # Entran al control igual que activos e inactivos, pero se los bloquea por la
+    # baja en sí, tengan o no los documentos al día (ver clasificar_run).
     total_bajas = 0
     if col_situacion:
-        de_baja = df[col_situacion].astype(str).map(_norm).str.contains("baja", na=False)
-        total_bajas = int(de_baja.sum())
-        df = df[~de_baja]
+        total_bajas = int(df[col_situacion].astype(str).map(_norm).str.contains("baja", na=False).sum())
 
     total_evaluados_inicial = len(df)
 
@@ -359,6 +358,8 @@ def procesar_gcg_export(file_like, archivo_origen):
         nombre = r.get(col_nombre) if col_nombre else None
         condicion = r.get(col_condicion) if col_condicion else None
         pais = pais_a_iso(r.get(col_pais)) if col_pais else None
+        estado_gcg = _texto(r.get(col_estado)) if col_estado else None
+        situacion_gcg = _texto(r.get(col_situacion)) if col_situacion else None
 
         for doc_nombre, doc_col in doc_cols.items():
             fecha_val = r.get(doc_col) if doc_col else None
@@ -374,6 +375,8 @@ def procesar_gcg_export(file_like, archivo_origen):
                 "pais": pais,
                 "documento": doc_nombre,
                 "fecha_vencimiento": fecha.isoformat() if fecha else None,
+                "estado_gcg": estado_gcg,
+                "situacion_gcg": situacion_gcg,
             })
 
     run_id = db.create_run(
@@ -438,7 +441,10 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
             "jd_bloqueado": jd_info is not None,
             "jd_tipo": (jd_info or {}).get("tipo"),
             "jd_descripcion": (jd_info or {}).get("descripcion"),
+            "baja_gcg": False,
         })
+        if "baja" in _norm(r.get("situacion_gcg") or ""):
+            c["baja_gcg"] = True
         fecha_str = r["fecha_vencimiento"]
         if not fecha_str:
             # Sin fecha cargada en GCG para este documento: no se evalúa (igual que
@@ -447,7 +453,14 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
             continue
         fecha = datetime.fromisoformat(fecha_str).date()
         dias_restantes = (fecha - hoy).days
-        if dias_restantes < 0:
+        if dias_restantes < 0 and _norm(r.get("estado_gcg") or "") == "habilitado":
+            # El exportado arrastra la última fecha de documentos que GCG ya no le
+            # pide (ej. cambió de matriz y dejó de pedirle Federación de
+            # Camioneros). Si GCG lo da por HABILITADO no puede tener vencido uno
+            # que sí le pide, así que no se lo bloquea por eso (mismo criterio que
+            # el desbloqueo: si no tiene el documento, no es vencido).
+            estado_doc = "no_requerido"
+        elif dias_restantes < 0:
             estado_doc = "vencido"
             c["docs_vencidos"].append({"documento": r["documento"], "fecha": fecha.isoformat(), "dias": dias_restantes})
         elif dias_restantes <= dias_alerta:
@@ -463,7 +476,7 @@ def clasificar_run(run_id, dias_alerta=7, jrt_filtro=None, orden=None, direccion
     proximos = []
     for c in por_chofer.values():
         c["docs_todos"].sort(key=lambda d: d["documento"])
-        if c["docs_vencidos"]:
+        if c["docs_vencidos"] or c["baja_gcg"]:
             vencidos.append(c)
         elif c["docs_proximos"]:
             proximos.append(c)
@@ -540,7 +553,9 @@ def resumen_por_transporte(run_id, dias_alerta=7, jrt_filtro=None):
             })
             t[campo].append(c)
 
-    _agregar(resultado["vencidos"], "vencidos")
+    # Los dados de baja no van en el mail: el transporte no tiene documentos que
+    # regularizar, se los bloquea por la baja en sí.
+    _agregar([c for c in resultado["vencidos"] if not c["baja_gcg"]], "vencidos")
     _agregar(resultado["proximos"], "proximos")
 
     lista = list(transportes.values())
@@ -574,6 +589,7 @@ _FILL_POR_ESTADO = {
     "proximo": "FEF3D9",
     "vigente": "E6F4EA",
     "sin_dato": "EEF0F2",
+    "no_requerido": "EEF0F2",
 }
 
 
@@ -598,6 +614,7 @@ def _filas_por_documento(choferes, documentos_activos, incluir_jd=False, jd_carg
             "JRT": c["jrt"],
             "N° Proveedor": c["nro_proveedor"],
             "Proveedor": c["razon_social"],
+            "Baja GCG": "Sí" if c.get("baja_gcg") else "",
         }
         if incluir_jd:
             if not jd_cargado:

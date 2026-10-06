@@ -23,7 +23,7 @@
 {% if trabajador %}
 <section class="panel">
   <div class="panel-header-row">
-    <h2>{{ trabajador.nombre }} <span class="muted small">DNI <button type="button" class="dni-copy" data-copy="{{ trabajador.dni }}" title="Copiar DNI">{{ trabajador.dni }}</button></span></h2>
+    <h2>{{ trabajador.nombre }}{% if trabajador.baja_gcg %} <span class="tag tag-baja">Baja GCG</span>{% endif %} <span class="muted small">DNI <button type="button" class="dni-copy" data-copy="{{ trabajador.dni }}" title="Copiar DNI">{{ trabajador.dni }}</button></span></h2>
     {% if todos_verdes %}
       <span class="estado-chip estado-ejecutado">se puede liberar</span>
     {% else %}
@@ -38,7 +38,9 @@
     (si está habilitado, los críticos que no figuran en GCG no bloquean; los vencidos sí)
   </p>
 
-  {% if todos_verdes %}
+  {% if trabajador.baja_gcg %}
+    <p class="flash flash-error">Dado de baja en GCG: se mantiene bloqueado aunque tenga los documentos al día.</p>
+  {% elif todos_verdes %}
     <p class="flash flash-ok">
       {% if criticos|selectattr('ok_por_habilitado')|list %}
         Los documentos críticos que figuran están vigentes y los que no figuran se aceptan porque GCG lo da por habilitado. Se puede liberar.

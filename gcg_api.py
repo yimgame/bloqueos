@@ -103,6 +103,21 @@ def evaluar_criticos(data, documentos_control):
     return detalle
 
 
+# Campo "situacion" de la API (lo crucé con la columna "Situacion" del exportado).
+SITUACION_ACTIVO = 1
+SITUACION_INACTIVO = 2
+SITUACION_BAJA = 3
+
+
+def es_baja(data):
+    """True si el trabajador figura "Dado de baja" en GCG: ya no trabaja más, se
+    lo mantiene bloqueado aunque tenga los documentos al día."""
+    try:
+        return int(data.get("situacion")) == SITUACION_BAJA
+    except (TypeError, ValueError):
+        return False
+
+
 def habilitado_gcg(data):
     """El "verde" de GCG para el trabajador en sí (campo "estadoHabilitacion").
     No se usa "habilitado", que es la habilitación final y también se cae si la
@@ -130,8 +145,8 @@ def documentos_criticos_verdes(data, numeros_documentos_criticos):
     """True si TODOS los documentos críticos (identificados por su número de GCG)
     aparecen en la respuesta con estado=true (no vencido). Uno que no aparece
     se acepta sólo si GCG da al trabajador por habilitado en general. Si alguno
-    figura vencido, o falta y GCG no lo habilita, False."""
-    if not numeros_documentos_criticos:
+    figura vencido, o falta y GCG no lo habilita, False. Un dado de baja nunca."""
+    if not numeros_documentos_criticos or es_baja(data):
         return False
     docs_api = _docs_por_numero(data)
     habilitado = habilitado_gcg(data)

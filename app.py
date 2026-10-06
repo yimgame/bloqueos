@@ -9,6 +9,9 @@ import json
 import os
 import re
 import socket
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -327,6 +330,9 @@ def _ejecutar_chequeo_gcg():
     estado_bloqueos_en = db.get_config().get("estado_bloqueos_actualizado_en") or ""
 
     for c in resultado["vencidos"]:
+        # Dado de baja en GCG: se lo mantiene bloqueado, ni se consulta.
+        if c.get("baja_gcg"):
+            continue
         if db.solicitud_pendiente_existente(c["dni"]):
             continue
         # Si ya se le ejecutó una liberación y todavía no se subió un estado de
@@ -699,8 +705,8 @@ def subir_export():
         f"{resumen['total_sin_proveedor']} sin número de proveedor)."
     )
     if resumen["total_bajas"]:
-        msg += (f" {resumen['total_bajas']} dados de baja no se controlan "
-                "(sólo quedan en el historial de transportes).")
+        msg += (f" {resumen['total_bajas']} dados de baja en GCG: se mantienen bloqueados "
+                "aunque tengan los documentos al día.")
     if resumen["missing_doc_cols"]:
         msg += " No se encontraron columnas para: " + ", ".join(resumen["missing_doc_cols"])
     flash(msg, "ok")
@@ -817,7 +823,8 @@ def gcg_consultar():
             for d in criticos:
                 d["ok_por_habilitado"] = not d["estado"] and bool(gcg_api.critico_ok(d, habilitado))
             faltan = gcg_api.faltantes(data, criticos)
-            todos_verdes = bool(criticos) and not faltan
+            baja = gcg_api.es_baja(data)
+            todos_verdes = bool(criticos) and not faltan and not baja
             catalogo = db.get_catalogo_documentos()
             proveedor = pipeline.buscar_proveedor_por_dni(dni)
             run = db.get_last_run()
@@ -835,6 +842,7 @@ def gcg_consultar():
                     "dni": data.get("dni") or dni,
                     "habilitado_gcg": gcg_api.habilitado_gcg(data),
                     "habilitado_final_gcg": data.get("habilitado"),
+                    "baja_gcg": baja,
                 },
                 "criticos": criticos,
                 "faltantes": faltan,
@@ -959,11 +967,15 @@ def solicitudes():
                     "nombre": f"{data.get('apellido', '')}, {data.get('nombre', '')}".strip(", "),
                     "dni": data.get("dni"),
                     "habilitado": data.get("habilitado"),
+                    "baja_gcg": gcg_api.es_baja(data),
                 }
                 # El JSON completo tal como lo devolvió GCG (datos del chofer,
                 # contratista y sus documentos), para verlo en el modal.
                 s["gcg_raw"] = data
-    return render_template("solicitudes.html", solicitudes=lista, chequeo=estado_chequeo_gcg())
+    return render_template(
+        "solicitudes.html", solicitudes=lista, chequeo=estado_chequeo_gcg(),
+        pendientes_jde=sum(1 for s in lista if s["estado"] == "autorizado"),
+    )
 
 
 @app.route("/solicitudes/export.xlsx")
@@ -1112,6 +1124,58 @@ def solicitud_ejecutar(solicitud_id):
     db.ejecutar_solicitud(solicitud_id, user["id"], user["nombre_completo"] or user["username"])
     flash("Desbloqueo marcado como ejecutado.", "ok")
     db.log_evento("solicitud", f"Solicitud #{solicitud_id} marcada como ejecutada", usuario=user)
+    return redirect(url_for("solicitudes"))
+
+
+# Ventanita de escritorio (pegador_jde.py) que pega con F8 en JDE los DNI de las
+# solicitudes autorizadas. Se abre en la PC donde corre esta app, así que sólo
+# tiene sentido pedirla desde esa misma PC. Se guarda el proceso para cerrar la
+# anterior al abrir otra (si no, quedarían dos escuchando F8 y pegarían doble).
+_pegador_proc = None
+
+
+def _es_pedido_local():
+    ip = request.remote_addr or ""
+    if ip.startswith("127.") or ip == "::1":
+        return True
+    try:
+        return ip in socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        return False
+
+
+@app.route("/solicitudes/pasar-jde", methods=["POST"])
+@auth.admin_required
+def solicitudes_pasar_jde():
+    global _pegador_proc
+    if not _es_pedido_local():
+        flash("La ventana para pasar a JDE se abre en la PC donde corre la app: usala desde esa PC.", "error")
+        return redirect(url_for("solicitudes"))
+    items = [
+        {"id": s["id"], "dni": str(s["dni"]), "nombre": s["nombre"]}
+        for s in db.list_solicitudes() if s["estado"] == "autorizado"
+    ]
+    if not items:
+        flash("No hay solicitudes autorizadas pendientes de pasar a JDE.", "ok")
+        return redirect(url_for("solicitudes"))
+    user = auth.current_user()
+    ruta = os.path.join(tempfile.gettempdir(), "bloqueos_pegador_jde.json")
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump({
+            "items": items,
+            "usuario_id": user["id"],
+            "usuario_nombre": user["nombre_completo"] or user["username"],
+        }, f, ensure_ascii=False)
+    if _pegador_proc and _pegador_proc.poll() is None:
+        _pegador_proc.terminate()
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    _pegador_proc = subprocess.Popen(
+        [pythonw if os.path.exists(pythonw) else sys.executable,
+         os.path.join(os.path.dirname(os.path.abspath(__file__)), "pegador_jde.py"), ruta],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    flash(f"Se abrió la ventana para pasar a JDE con {len(items)} DNI: poné el cursor en JDE y apretá F8.", "ok")
     return redirect(url_for("solicitudes"))
 
 

@@ -29,7 +29,16 @@
       <span class="chequeo-sep">·</span>
       <span class="chequeo-proximo"></span>
     </div>
-    <a class="btn-link" href="{{ url_for('solicitudes_exportar') }}">Exportar a Excel</a>
+    <div class="acciones-header">
+      {% if current_user and current_user.rol == 'admin' and pendientes_jde %}
+      <form method="post" action="{{ url_for('solicitudes_pasar_jde') }}" class="form-pasar-jde">
+        <button type="submit" class="btn-ok" title="Abre una ventanita con los DNI de las autorizadas para pegarlos de a uno en JDE con F8">
+          Pasar a JDE ({{ pendientes_jde }})
+        </button>
+      </form>
+      {% endif %}
+      <a class="btn-link" href="{{ url_for('solicitudes_exportar') }}">Exportar a Excel</a>
+    </div>
   </div>
   <p class="muted">Auditoría: quién pidió el desbloqueo de cada chofer, quién lo autorizó y quién lo liberó en JDE.</p>
   {% if solicitudes %}
@@ -46,7 +55,7 @@
       {% for s in solicitudes %}
       {% set tiene_gcg = (s.gcg_documentos is not none) or s.gcg_error %}
       <tr{% if tiene_gcg %} class="row-clickable" data-doc-target="gcg-doc-{{ s.id }}" data-dni="{{ s.dni }}" data-nombre="{{ s.nombre }}" title="Ver lo que se encontró en GCG al momento de esta solicitud"{% endif %}>
-        <td>{{ s.nombre }}</td>
+        <td>{{ s.nombre }}{% if s.gcg_trabajador and s.gcg_trabajador.baja_gcg %} <span class="tag tag-baja" title="Dado de baja en GCG al momento de la solicitud">Baja GCG</span>{% endif %}</td>
         <td><button type="button" class="dni-copy" data-copy="{{ s.dni }}" title="Copiar DNI">{{ s.dni }}</button></td>
         <td>{{ s.jrt }}</td>
         <td>{{ s.razon_social or '—' }}</td>

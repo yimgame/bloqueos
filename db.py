@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS choferes_docs (
     pais TEXT,
     documento TEXT,
     fecha_vencimiento TEXT,
+    estado_gcg TEXT,
+    situacion_gcg TEXT,
     FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 
@@ -443,6 +445,13 @@ def _migrar_columnas(conn):
     cols_choferes_docs = {r["name"] for r in conn.execute("PRAGMA table_info(choferes_docs)")}
     if "pais" not in cols_choferes_docs:
         conn.execute("ALTER TABLE choferes_docs ADD COLUMN pais TEXT")
+    # Estado de habilitación del trabajador en GCG según el exportado (columna
+    # "Estado"): ver pipeline.clasificar_run (documentos que ya no se le piden).
+    if "estado_gcg" not in cols_choferes_docs:
+        conn.execute("ALTER TABLE choferes_docs ADD COLUMN estado_gcg TEXT")
+    # Situación en GCG según el exportado (Activo / Inactivo / Dado de baja).
+    if "situacion_gcg" not in cols_choferes_docs:
+        conn.execute("ALTER TABLE choferes_docs ADD COLUMN situacion_gcg TEXT")
 
 
 def now_iso():
@@ -724,10 +733,10 @@ def insert_choferes_docs(run_id, rows):
         conn.executemany(
             """INSERT INTO choferes_docs
                (run_id, dni, nombre, condicion, nro_proveedor, razon_social, jrt,
-                mail_proveedor, pais, documento, fecha_vencimiento)
+                mail_proveedor, pais, documento, fecha_vencimiento, estado_gcg, situacion_gcg)
                VALUES (:run_id, :dni, :nombre, :condicion, :nro_proveedor, :razon_social, :jrt,
-                       :mail_proveedor, :pais, :documento, :fecha_vencimiento)""",
-            [{**r, "run_id": run_id} for r in rows],
+                       :mail_proveedor, :pais, :documento, :fecha_vencimiento, :estado_gcg, :situacion_gcg)""",
+            [{"estado_gcg": None, "situacion_gcg": None, **r, "run_id": run_id} for r in rows],
         )
 
 

@@ -361,6 +361,7 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: upp
 .doc-chip-proximo { background: var(--amber-bg); color: var(--amber); }
 .doc-chip-vigente { background: #e6f4ea; color: #1e7d32; }
 .doc-chip-sin_dato { background: #eef0f2; color: var(--muted); border: 1px dashed #c7cbd1; }
+.doc-chip-no_requerido { background: #eef0f2; color: var(--muted); border: 1px dashed #c7cbd1; text-decoration: line-through; }
 
 /* estado de solicitud */
 .estado-chip {
@@ -477,6 +478,7 @@ th.th-sortable:hover { color: var(--text); }
 .gcg-estado-vencido { background: var(--red); }
 .gcg-estado-na { background: #c7cbd1; color: var(--muted); }
 
+.tag-baja { background: var(--red); color: white; font-weight: 600; margin-left: 4px; }
 .tag-prio1 { background: var(--red); color: white; font-weight: 600; margin-left: 4px; }
 .checkbox-label { flex-direction: row !important; align-items: center; gap: 6px; }
 
@@ -528,3 +530,7 @@ th.th-sortable:hover { color: var(--text); }
   line-height: 1.4;
   white-space: pre;
 }
+
+/* Solicitudes: botón "Pasar a JDE" junto a "Exportar a Excel" */
+.acciones-header { display: flex; align-items: center; gap: 8px; }
+.acciones-header form { margin: 0; }
